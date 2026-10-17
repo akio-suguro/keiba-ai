@@ -1,0 +1,10 @@
+pandas
+scikit-learn
+joblib
+streamlit
+pdfplumber
+requests
+beautifulsoup4
+lxml
+scikit-learn
+joblib
