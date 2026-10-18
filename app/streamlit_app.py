@@ -516,6 +516,46 @@ except (sqlite3.Error, pd.errors.DatabaseError) as exc:
     st.error(f"出走馬データの取得に失敗しました: {exc}")
     st.stop()
 
+st.subheader("出走馬・出走情報")
+if horses.empty:
+    st.info("このレースの出走馬データはありません。")
+else:
+    entry_display = horses.sort_values(
+        "horse_number",
+        key=lambda values: pd.to_numeric(values, errors="coerce"),
+        na_position="last",
+    ).rename(
+        columns={
+            "horse_number": "馬番",
+            "horse_name": "馬名",
+            "sex_age": "性齢",
+            "weight": "斤量",
+            "jockey": "騎手",
+            "trainer": "調教師",
+            "body_weight": "馬体重",
+            "weight_change": "馬体重増減",
+            "popularity": "人気",
+            "odds": "単勝オッズ",
+        }
+    )
+    entry_columns = [
+        "馬番",
+        "馬名",
+        "性齢",
+        "斤量",
+        "騎手",
+        "調教師",
+        "馬体重",
+        "馬体重増減",
+        "人気",
+        "単勝オッズ",
+    ]
+    st.dataframe(
+        entry_display[entry_columns],
+        width="stretch",
+        hide_index=True,
+    )
+
 if not MODEL_PATH.exists():
     st.error(f"上位3頭予測モデルが見つかりません: {MODEL_PATH}")
 elif horses.empty:
