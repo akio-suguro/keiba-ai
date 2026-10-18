@@ -1,0 +1,107 @@
+{
+  "model": "standardized_unweighted_logistic_regression",
+  "target": "target_race_upset",
+  "definition": "At least one horse with popularity rank >= 7 finishes in positions 1, 2, or 3",
+  "popularity_threshold": 7,
+  "split": {
+    "train": "2015-01-01 to 2022-12-31",
+    "validation": "2023-01-01 to 2024-12-31",
+    "test": "2025-01-01 onward"
+  },
+  "counts": {
+    "all_labeled_races": 999,
+    "train_races": 495,
+    "validation_races": 225,
+    "test_races": 207
+  },
+  "class_rates": {
+    "train_upset_rate": 0.604040404040404,
+    "validation_upset_rate": 0.5733333333333334,
+    "test_upset_rate": 0.6280193236714976
+  },
+  "validation": {
+    "n_races": 225,
+    "actual_upset_rate": 0.5733333333333334,
+    "predicted_upset_rate_at_0_5": 0.7555555555555555,
+    "accuracy_at_0_5": 0.6044444444444445,
+    "precision_at_0_5": 0.6176470588235294,
+    "recall_at_0_5": 0.813953488372093,
+    "brier_score": 0.23874116987349522,
+    "log_loss": 0.6760781295750788,
+    "confusion_matrix_labels_0_1": [
+      [
+        31,
+        65
+      ],
+      [
+        24,
+        105
+      ]
+    ],
+    "roc_auc": 0.619468669250646,
+    "pr_auc": 0.6614906813805637,
+    "top_10pct_upset_rate": 0.6956521739130435,
+    "bottom_10pct_upset_rate": 0.34782608695652173
+  },
+  "test": {
+    "n_races": 207,
+    "actual_upset_rate": 0.6280193236714976,
+    "predicted_upset_rate_at_0_5": 0.7198067632850241,
+    "accuracy_at_0_5": 0.6956521739130435,
+    "precision_at_0_5": 0.7248322147651006,
+    "recall_at_0_5": 0.8307692307692308,
+    "brier_score": 0.18052894386577917,
+    "log_loss": 0.5389366532761568,
+    "confusion_matrix_labels_0_1": [
+      [
+        36,
+        41
+      ],
+      [
+        22,
+        108
+      ]
+    ],
+    "roc_auc": 0.7941558441558441,
+    "pr_auc": 0.8705247546108166,
+    "top_10pct_upset_rate": 0.9523809523809523,
+    "bottom_10pct_upset_rate": 0.14285714285714285
+  },
+  "categorical_features": [
+    "venue",
+    "surface",
+    "direction",
+    "race_name",
+    "distance_band"
+  ],
+  "numeric_features": [
+    "distance_m",
+    "field_size"
+  ],
+  "features": [
+    "venue",
+    "surface",
+    "direction",
+    "race_name",
+    "distance_band",
+    "distance_m",
+    "field_size"
+  ],
+  "excluded_post_event_fields": [
+    "finish",
+    "popularity",
+    "odds",
+    "time",
+    "margin",
+    "last_3f",
+    "payouts",
+    "max_exotic_payout",
+    "target_race_upset"
+  ],
+  "notes": [
+    "Odds are not used as a feature or target.",
+    "Races with incomplete top-three results are excluded.",
+    "Races with invalid top-three popularity ranks are excluded.",
+    "The test period is not used for model fitting."
+  ]
+}

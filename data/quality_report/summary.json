@@ -1,0 +1,12 @@
+{
+  "races_with_invalid_or_missing_metadata": 0,
+  "duplicate_race_urls": 0,
+  "races_with_fewer_than_5_horses": 0,
+  "invalid_finish_records": 345,
+  "duplicate_horse_numbers": 0,
+  "horses_with_missing_required_fields": 345,
+  "races_without_payout_records": 0,
+  "invalid_race_dates": 0,
+  "crawl_error_rows": 1307,
+  "unique_crawl_error_urls": 1288
+}

@@ -2,14 +2,9 @@
   "model": "RandomForestClassifier",
   "target": "finish <= 3",
   "sklearn_version": "1.9.1",
-  "total_horses": 2978,
-  "train_horses": 2389,
-  "test_horses": 589,
-  "train_races": 167,
-  "test_races": 42,
-  "train_start_date": "2025-01-05",
-  "train_end_date": "2026-05-30",
-  "test_start_date": "2026-05-31",
+  "test_horses": 6630,
+  "test_races": 465,
+  "test_start_date": "2022-09-18",
   "test_end_date": "2026-10-17",
   "features": [
     "venue",
@@ -20,41 +15,41 @@
     "jockey",
     "trainer",
     "distance_m",
+    "frame",
     "horse_number",
-    "carried_weight",
-    "popularity"
+    "carried_weight"
   ],
-  "positive_rate_test": 0.21392190152801357,
-  "accuracy": 0.7096774193548387,
-  "precision": 0.391304347826087,
-  "recall": 0.6428571428571429,
+  "positive_rate_test": 0.2105580693815988,
+  "accuracy": 0.5770739064856711,
+  "precision": 0.2714285714285714,
+  "recall": 0.5988538681948424,
   "classification_report": {
-    "0": {
-      "precision": 0.8821989528795812,
-      "recall": 0.7278617710583153,
-      "f1-score": 0.7976331360946746,
-      "support": 463.0
+    "4着以下": {
+      "precision": 0.8422535211267606,
+      "recall": 0.5712648070309515,
+      "f1-score": 0.680783242258652,
+      "support": 5234.0
     },
-    "1": {
-      "precision": 0.391304347826087,
-      "recall": 0.6428571428571429,
-      "f1-score": 0.4864864864864865,
-      "support": 126.0
+    "3着以内": {
+      "precision": 0.2714285714285714,
+      "recall": 0.5988538681948424,
+      "f1-score": 0.3735478105451296,
+      "support": 1396.0
     },
-    "accuracy": 0.7096774193548387,
+    "accuracy": 0.5770739064856711,
     "macro avg": {
-      "precision": 0.6367516503528341,
-      "recall": 0.685359456957729,
-      "f1-score": 0.6420598112905805,
-      "support": 589.0
+      "precision": 0.556841046277666,
+      "recall": 0.585059337612897,
+      "f1-score": 0.5271655264018908,
+      "support": 6630.0
     },
     "weighted avg": {
-      "precision": 0.7771858455166945,
-      "recall": 0.7096774193548387,
-      "f1-score": 0.7310720531564203,
-      "support": 589.0
+      "precision": 0.7220617217634616,
+      "recall": 0.5770739064856711,
+      "f1-score": 0.6160923429114308,
+      "support": 6630.0
     }
   },
-  "roc_auc": 0.7366896362576708,
-  "average_precision": 0.4336418317484466
+  "roc_auc": 0.626710151171588,
+  "average_precision": 0.30917290270467
 }
