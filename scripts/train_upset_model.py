@@ -15,15 +15,30 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import (
     accuracy_score,
     average_precision_score,
+    balanced_accuracy_score,
     brier_score_loss,
     confusion_matrix,
     log_loss,
     precision_score,
     recall_score,
+    roc_curve,
     roc_auc_score,
 )
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
+
+if __package__:
+    from .model_features import (
+        HISTORICAL_FEATURE_COLUMNS,
+        add_historical_performance_features,
+        add_sex_age_features,
+    )
+else:
+    from model_features import (
+        HISTORICAL_FEATURE_COLUMNS,
+        add_historical_performance_features,
+        add_sex_age_features,
+    )
 
 
 # ============================================================
@@ -37,7 +52,7 @@ DB_PATH = Path("/app/data/keiba.db")
 OUTPUT_DIR = Path("/app/data/model/upset")
 
 # 時系列分割
-TRAIN_START = "2015-01-01"
+TRAIN_START = "2002-01-01"
 TRAIN_END = "2022-12-31"
 
 VALID_START = "2023-01-01"
@@ -147,7 +162,6 @@ def build_race_labels(
     race_rows: list[dict[str, Any]] = []
     excluded_incomplete = 0
     excluded_invalid_popularity = 0
-    excluded_invalid_finish = 0
 
     for race_id, group in horses.groupby("race_id", sort=False):
         valid = group.copy()
@@ -287,7 +301,7 @@ def build_race_labels(
         "3着以内の人気順位不備で除外: "
         f"{excluded_invalid_popularity}"
     )
-    print(f"不正な着順行を含むレースの扱い: 着順検証で判定")
+    print("1〜3着が確定できないレースは除外")
 
     return data, audit
 
@@ -298,71 +312,180 @@ def build_race_labels(
 
 def add_race_features(
     data: pd.DataFrame,
+    races: pd.DataFrame,
+    horses: pd.DataFrame,
 ) -> tuple[pd.DataFrame, list[str], list[str]]:
     """
-    レース前に分かる情報だけで特徴量を作る。
+    レース前の出走馬情報と過去実績だけからレース特徴量を作る。
 
-    finish、popularity、odds、タイム、払戻金は使わない。
+    現レースの着順・人気・オッズ・タイム・払戻金は使わない。
     """
-
-    df = data.copy()
-
-    # 収集元によって一部の列が存在しない場合にも対応
-    for col in (
+    race_frame = data.copy()
+    for column in (
         "venue",
         "surface",
         "direction",
         "race_name",
         "distance_m",
+        "race_number",
+        "start_time",
+        "weather",
+        "turf_condition",
+        "dirt_condition",
+        "race_grade",
+        "race_conditions",
     ):
-        if col not in df.columns:
-            df[col] = np.nan
+        if column not in race_frame.columns:
+            race_frame[column] = np.nan
 
-    df["distance_m"] = pd.to_numeric(
-        df["distance_m"],
+    race_frame["distance_m"] = pd.to_numeric(
+        race_frame["distance_m"],
         errors="coerce",
     )
-
-    # 距離をカテゴリ化
-    df["distance_band"] = pd.cut(
-        df["distance_m"],
+    race_frame["distance_band"] = pd.cut(
+        race_frame["distance_m"],
         bins=[0, 1400, 1800, 2200, 10000],
-        labels=[
-            "short",
-            "mile_middle",
-            "middle_long",
-            "long",
-        ],
+        labels=["short", "mile_middle", "middle_long", "long"],
         include_lowest=True,
     ).astype("object")
+    race_frame["race_number"] = pd.to_numeric(
+        race_frame["race_number"],
+        errors="coerce",
+    )
+    start_parts = race_frame["start_time"].astype("string").str.extract(
+        r"(\d{1,2})[:：](\d{2})"
+    )
+    race_frame["start_minutes"] = (
+        pd.to_numeric(start_parts[0], errors="coerce") * 60
+        + pd.to_numeric(start_parts[1], errors="coerce")
+    )
 
-    categorical = [
+    date_by_race = races[["id", "race_date"]].rename(
+        columns={"id": "race_id"}
+    )
+    horse_context = horses.drop(
+        columns=["race_date"],
+        errors="ignore",
+    ).merge(
+        date_by_race,
+        on="race_id",
+        how="left",
+        validate="many_to_one",
+    )
+    horse_context = add_sex_age_features(horse_context)
+    horse_context = add_historical_performance_features(horse_context)
+
+    numeric_horse_features = [
+        "frame",
+        "horse_number",
+        "weight",
+        "body_weight",
+        "weight_change",
+        "age",
+        *HISTORICAL_FEATURE_COLUMNS,
+    ]
+    available_horse_features = []
+    for column in numeric_horse_features:
+        if column not in horse_context.columns:
+            continue
+        horse_context[column] = pd.to_numeric(
+            horse_context[column],
+            errors="coerce",
+        )
+        if horse_context[column].notna().any():
+            available_horse_features.append(column)
+
+    scoped_horses = horse_context[
+        horse_context["race_id"].isin(race_frame["race_id"])
+    ]
+    if available_horse_features:
+        grouped = scoped_horses.groupby("race_id")[
+            available_horse_features
+        ]
+        aggregate = grouped.agg(["mean", "std", "min", "max"])
+        aggregate.columns = [
+            f"field_{column}_{statistic}"
+            for column, statistic in aggregate.columns
+        ]
+        race_frame = race_frame.merge(
+            aggregate.reset_index(),
+            on="race_id",
+            how="left",
+            validate="one_to_one",
+        )
+
+    if "horse_mark" in horse_context.columns:
+        marks = horse_context.dropna(
+            subset=["horse_mark"]
+        ).copy()
+        if not marks.empty:
+            mark_counts = pd.crosstab(
+                marks["race_id"],
+                marks["horse_mark"].astype(str),
+            )
+            mark_counts.columns = [
+                f"field_horse_mark_{column}"
+                for column in mark_counts.columns
+            ]
+            race_frame = race_frame.merge(
+                mark_counts.reset_index(),
+                on="race_id",
+                how="left",
+                validate="one_to_one",
+            )
+
+    race_categorical_candidates = [
         "venue",
         "surface",
         "direction",
         "race_name",
         "distance_band",
+        "weather",
+        "turf_condition",
+        "dirt_condition",
+        "race_grade",
+        "race_conditions",
     ]
-
+    categorical = [
+        column
+        for column in race_categorical_candidates
+        if column in race_frame.columns
+        and race_frame[column].notna().any()
+    ]
     numeric = [
         "distance_m",
+        "race_number",
+        "start_minutes",
         "field_size",
+        *[
+            column
+            for column in race_frame.columns
+            if column.startswith("field_")
+            and column not in categorical
+        ],
+    ]
+    numeric = list(dict.fromkeys(numeric))
+    numeric = [
+        column
+        for column in numeric
+        if column in race_frame.columns
+        and pd.to_numeric(race_frame[column], errors="coerce").notna().any()
     ]
 
-    for col in categorical:
-        df[col] = (
-            df[col]
+    for column in categorical:
+        race_frame[column] = (
+            race_frame[column]
             .fillna("unknown")
             .astype(str)
+            .replace("", "unknown")
         )
-
-    for col in numeric:
-        df[col] = pd.to_numeric(
-            df[col],
+    for column in numeric:
+        race_frame[column] = pd.to_numeric(
+            race_frame[column],
             errors="coerce",
         )
 
-    return df, categorical, numeric
+    return race_frame, categorical, numeric
 
 
 # ============================================================
@@ -439,6 +562,7 @@ def make_pipeline(
 def evaluate(
     y_true: pd.Series,
     probabilities: np.ndarray,
+    threshold: float = 0.5,
 ) -> dict[str, Any]:
     """二値分類モデルを複数の指標で評価する。"""
 
@@ -448,25 +572,29 @@ def evaluate(
         dtype=float,
     )
 
-    predictions = (probabilities >= 0.5).astype(int)
+    predictions = (probabilities >= threshold).astype(int)
 
     result: dict[str, Any] = {
         "n_races": int(len(y)),
         "actual_upset_rate": float(y.mean()),
-        "predicted_upset_rate_at_0_5": float(
+        "classification_threshold": float(threshold),
+        "predicted_upset_rate": float(
             predictions.mean()
         ),
-        "accuracy_at_0_5": float(
+        "accuracy": float(
             accuracy_score(y, predictions)
         ),
-        "precision_at_0_5": float(
+        "balanced_accuracy": float(
+            balanced_accuracy_score(y, predictions)
+        ),
+        "precision": float(
             precision_score(
                 y,
                 predictions,
                 zero_division=0,
             )
         ),
-        "recall_at_0_5": float(
+        "recall": float(
             recall_score(
                 y,
                 predictions,
@@ -528,6 +656,28 @@ def evaluate(
     return result
 
 
+def choose_balanced_accuracy_threshold(
+    y_true: pd.Series,
+    probabilities: np.ndarray,
+) -> float:
+    """Choose an equal-error-cost threshold on validation data only."""
+    y = np.asarray(y_true, dtype=int)
+    probabilities = np.asarray(probabilities, dtype=float)
+    if len(np.unique(y)) < 2:
+        return 0.5
+
+    false_positive_rate, true_positive_rate, thresholds = roc_curve(
+        y,
+        probabilities,
+    )
+    balanced_accuracy = (
+        true_positive_rate + (1 - false_positive_rate)
+    ) / 2
+    best_index = int(np.argmax(balanced_accuracy))
+    threshold = float(thresholds[best_index])
+    return threshold if np.isfinite(threshold) else 0.5
+
+
 # ============================================================
 # 学習・評価・保存
 # ============================================================
@@ -550,8 +700,8 @@ def main() -> None:
     print(f"\nDB内レース数: {len(races)}")
     print(f"DB内出走馬データ数: {len(horses)}")
     print(
-        "オッズ列は学習に使用しません。"
-        "NULLのままで問題ありません。"
+        "現レースの人気順位・オッズは波乱ラベルの定義と重なるため"
+        "特徴量から除外します。"
     )
 
     data, audit = build_race_labels(
@@ -560,7 +710,9 @@ def main() -> None:
     )
 
     data, categorical, numeric = add_race_features(
-        data
+        data,
+        races,
+        horses,
     )
 
     target = "target_race_upset"
@@ -646,9 +798,14 @@ def main() -> None:
         valid_prob,
     )
 
+    classification_threshold = choose_balanced_accuracy_threshold(
+        valid[target],
+        valid_prob,
+    )
     test_metrics = evaluate(
         test[target],
         test_prob,
+        threshold=classification_threshold,
     )
 
     metrics = {
@@ -670,6 +827,9 @@ def main() -> None:
             "validation_races": int(len(valid)),
             "test_races": int(len(test)),
         },
+        "deployment_model_trained_through": str(
+            data["race_date"].max().date()
+        ),
         "class_rates": {
             "train_upset_rate": float(train[target].mean()),
             "validation_upset_rate": float(valid[target].mean()),
@@ -677,6 +837,9 @@ def main() -> None:
         },
         "validation": validation_metrics,
         "test": test_metrics,
+        "classification_threshold_selected_on_validation": (
+            classification_threshold
+        ),
         "categorical_features": categorical,
         "numeric_features": numeric,
         "features": feature_cols,
@@ -692,15 +855,22 @@ def main() -> None:
             "target_race_upset",
         ],
         "notes": [
-            "Odds are not used as a feature or target.",
+            "Popularity and odds from the target race are excluded to prevent label leakage.",
+            "Horse, jockey and trainer form features use only results from earlier dates.",
+            "Race-entry and weigh-in fields are aggregated from the current field.",
             "Races with incomplete top-three results are excluded.",
             "Races with invalid top-three popularity ranks are excluded.",
             "The test period is not used for model fitting.",
+            "The classification threshold maximizes balanced accuracy on validation data only.",
         ],
     }
 
     # モデル保存
     model_path = OUTPUT_DIR / "upset_model.joblib"
+    model.fit(
+        data[feature_cols],
+        data[target].astype(int),
+    )
     joblib.dump(model, model_path)
 
     # 指標保存
@@ -732,6 +902,11 @@ def main() -> None:
     )
 
     predictions["upset_probability"] = test_prob
+    predictions["predicted_upset"] = (
+        predictions["upset_probability"]
+        .ge(classification_threshold)
+        .astype(int)
+    )
 
     predictions["risk_rank"] = (
         predictions["upset_probability"]

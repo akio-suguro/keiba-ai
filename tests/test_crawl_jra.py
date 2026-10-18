@@ -1,3 +1,4 @@
+import sqlite3
 import unittest
 from unittest.mock import patch
 
@@ -64,6 +65,47 @@ class RaceIndexUrlTests(unittest.TestCase):
                 "https://www.jra.go.jp/datafile/seiseki/replay/2026/002.html",
             ],
         )
+
+
+class DatabaseMigrationTests(unittest.TestCase):
+    def test_adds_optional_result_columns_to_existing_tables(self):
+        with sqlite3.connect(":memory:") as conn:
+            conn.executescript(
+                """
+                CREATE TABLE races (id INTEGER PRIMARY KEY, race_date TEXT);
+                CREATE TABLE horses (id INTEGER PRIMARY KEY, race_id INTEGER);
+                CREATE TABLE payouts (id INTEGER PRIMARY KEY, race_id INTEGER);
+                """
+            )
+
+            crawl_jra.init_db(conn)
+
+            races = crawl_jra.get_table_columns(conn, "races")
+            horses = crawl_jra.get_table_columns(conn, "horses")
+            payouts = crawl_jra.get_table_columns(conn, "payouts")
+
+        self.assertTrue(
+            {
+                "race_number",
+                "start_time",
+                "weather",
+                "turf_condition",
+                "dirt_condition",
+                "race_grade",
+                "race_conditions",
+            }.issubset(races)
+        )
+        self.assertTrue(
+            {
+                "horse_mark",
+                "corner_order",
+                "horse_url",
+                "jockey_url",
+                "trainer_url",
+                "source_fields",
+            }.issubset(horses)
+        )
+        self.assertIn("popularity", payouts)
 
 
 class LegacyRacePageTests(unittest.TestCase):
@@ -195,6 +237,73 @@ class TransitionalRacePageTests(unittest.TestCase):
         self.assertEqual(race["distance_m"], 2000)
         self.assertEqual(race["surface"], "芝")
         self.assertEqual(race["direction"], "右")
+
+
+class HorseFieldExtractionTests(unittest.TestCase):
+    def test_extracts_odds_popularity_and_raw_columns(self):
+        soup = BeautifulSoup(
+            """
+            <table>
+              <tr>
+                <th>着順</th><th>枠</th><th>馬番</th><th>馬名</th>
+                <th>性齢</th><th>負担重量</th><th>騎手</th>
+                <th>単勝オッズ</th><th>タイム</th><th>着差</th>
+                <th>推定上り</th><th>馬体重</th><th>調教師</th>
+                <th>単勝人気</th>
+              </tr>
+              <tr>
+                <td>1</td><td>4</td><td>6</td><td>テストホース</td>
+                <td>牡4</td><td>56.0</td><td></td><td>12.5</td>
+                <td>1:32.3</td><td></td><td>34.5</td>
+                <td>480 (+4)</td><td>テスト調教師</td><td>3</td>
+              </tr>
+            </table>
+            """,
+            "html.parser",
+        )
+
+        horse = crawl_jra.parse_horses(soup)[0]
+
+        self.assertEqual(horse["jockey"], None)
+        self.assertEqual(horse["odds"], 12.5)
+        self.assertEqual(horse["popularity"], 3)
+        self.assertEqual(horse["time"], "1:32.3")
+        self.assertEqual(horse["last_3f"], 34.5)
+        self.assertEqual(horse["body_weight"], 480)
+        self.assertEqual(horse["weight_change"], 4)
+        self.assertEqual(horse["trainer"], "テスト調教師")
+        self.assertEqual(horse["source_fields"]["単勝オッズ"], "12.5")
+
+    def test_aligns_separate_zero_body_weight_change_column(self):
+        soup = BeautifulSoup(
+            """
+            <table>
+              <tr>
+                <th>着順</th><th>枠</th><th>馬番</th><th>馬名</th>
+                <th>性齢</th><th>負担重量</th><th>騎手</th>
+                <th>タイム</th><th>着差</th><th>推定上り</th>
+                <th>馬体重</th><th>調教師</th><th>単勝人気</th>
+              </tr>
+              <tr>
+                <td>1</td><td></td><td>3</td><td>テストホース</td>
+                <td>牡6</td><td>56.5</td><td></td><td>テスト騎手</td>
+                <td>2:00.6</td><td></td><td>35.6</td><td>480</td>
+                <td>0</td><td>テスト調教師</td><td>1</td>
+              </tr>
+            </table>
+            """,
+            "html.parser",
+        )
+
+        horse = crawl_jra.parse_horses(soup)[0]
+
+        self.assertEqual(horse["jockey"], "テスト騎手")
+        self.assertEqual(horse["time"], "2:00.6")
+        self.assertEqual(horse["last_3f"], 35.6)
+        self.assertEqual(horse["body_weight"], 480)
+        self.assertEqual(horse["weight_change"], 0)
+        self.assertEqual(horse["trainer"], "テスト調教師")
+        self.assertEqual(horse["popularity"], 1)
 
 
 if __name__ == "__main__":

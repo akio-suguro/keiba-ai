@@ -1,55 +1,179 @@
 {
-  "model": "RandomForestClassifier",
+  "model": "HistGradientBoostingClassifier",
   "target": "finish <= 3",
   "sklearn_version": "1.9.1",
-  "test_horses": 6630,
-  "test_races": 465,
-  "test_start_date": "2022-09-18",
-  "test_end_date": "2026-10-17",
+  "test_horses": 4939,
+  "test_races": 349,
+  "test_start_date": "2023-09-18",
+  "test_end_date": "2026-10-18",
   "features": [
     "venue",
     "surface",
     "direction",
     "race_name",
-    "sex_age",
+    "sex",
     "jockey",
     "trainer",
     "distance_m",
     "frame",
     "horse_number",
-    "carried_weight"
+    "age",
+    "weight",
+    "body_weight",
+    "weight_change",
+    "popularity",
+    "horse_prior_starts",
+    "horse_prior_win_rate",
+    "horse_prior_top3_rate",
+    "jockey_prior_starts",
+    "jockey_prior_win_rate",
+    "jockey_prior_top3_rate",
+    "trainer_prior_starts",
+    "trainer_prior_win_rate",
+    "trainer_prior_top3_rate"
   ],
-  "positive_rate_test": 0.2105580693815988,
-  "accuracy": 0.5770739064856711,
-  "precision": 0.2714285714285714,
-  "recall": 0.5988538681948424,
-  "classification_report": {
+  "positive_rate_test": 0.21198623203077546,
+  "accuracy_at_0_5": 0.8027940878720389,
+  "precision_at_0_5": 0.5883777239709443,
+  "recall_at_0_5": 0.23209169054441262,
+  "classification_report_at_0_5": {
     "4着以下": {
-      "precision": 0.8422535211267606,
-      "recall": 0.5712648070309515,
-      "f1-score": 0.680783242258652,
-      "support": 5234.0
+      "precision": 0.8223596995139196,
+      "recall": 0.9563206577595067,
+      "f1-score": 0.8842955571394631,
+      "support": 3892.0
     },
     "3着以内": {
-      "precision": 0.2714285714285714,
-      "recall": 0.5988538681948424,
-      "f1-score": 0.3735478105451296,
-      "support": 1396.0
+      "precision": 0.5883777239709443,
+      "recall": 0.23209169054441262,
+      "f1-score": 0.33287671232876714,
+      "support": 1047.0
     },
-    "accuracy": 0.5770739064856711,
+    "accuracy": 0.8027940878720389,
     "macro avg": {
-      "precision": 0.556841046277666,
-      "recall": 0.585059337612897,
-      "f1-score": 0.5271655264018908,
-      "support": 6630.0
+      "precision": 0.705368711742432,
+      "recall": 0.5942061741519596,
+      "f1-score": 0.608586134734115,
+      "support": 4939.0
     },
     "weighted avg": {
-      "precision": 0.7220617217634616,
-      "recall": 0.5770739064856711,
-      "f1-score": 0.6160923429114308,
-      "support": 6630.0
+      "precision": 0.7727587421554473,
+      "recall": 0.8027940878720389,
+      "f1-score": 0.7674023539572807,
+      "support": 4939.0
     }
   },
-  "roc_auc": 0.626710151171588,
-  "average_precision": 0.30917290270467
+  "roc_auc": 0.7633555865090981,
+  "average_precision": 0.46825889283044736,
+  "race_level_top3": {
+    "races": 349,
+    "mean_correct_picks": 1.4641833810888252,
+    "precision_at_3": 0.4880611270296084,
+    "recall_at_3": 0.4880611270296084,
+    "race_with_any_top3_hit_rate": 0.8853868194842407,
+    "winner_hit_rate": 0.5988538681948424,
+    "exact_top3_set_rate": 0.07449856733524356
+  },
+  "popularity_baseline": {
+    "races": 349,
+    "mean_correct_picks": 1.4240687679083095,
+    "precision_at_3": 0.47468958930276983,
+    "recall_at_3": 0.47468958930276983,
+    "race_with_any_top3_hit_rate": 0.8825214899713467,
+    "winner_hit_rate": 0.5873925501432665,
+    "exact_top3_set_rate": 0.0659025787965616
+  },
+  "validation": {
+    "model": "HistGradientBoostingClassifier",
+    "target": "finish <= 3",
+    "sklearn_version": "1.9.1",
+    "test_horses": 4889,
+    "test_races": 341,
+    "test_start_date": "2020-09-13",
+    "test_end_date": "2023-09-17",
+    "features": [
+      "venue",
+      "surface",
+      "direction",
+      "race_name",
+      "sex",
+      "jockey",
+      "trainer",
+      "distance_m",
+      "frame",
+      "horse_number",
+      "age",
+      "weight",
+      "body_weight",
+      "weight_change",
+      "popularity",
+      "horse_prior_starts",
+      "horse_prior_win_rate",
+      "horse_prior_top3_rate",
+      "jockey_prior_starts",
+      "jockey_prior_win_rate",
+      "jockey_prior_top3_rate",
+      "trainer_prior_starts",
+      "trainer_prior_win_rate",
+      "trainer_prior_top3_rate"
+    ],
+    "positive_rate_test": 0.20924524442626305,
+    "accuracy_at_0_5": 0.8017999590918389,
+    "precision_at_0_5": 0.5675,
+    "recall_at_0_5": 0.22189638318670576,
+    "classification_report_at_0_5": {
+      "4着以下": {
+        "precision": 0.8226776564936511,
+        "recall": 0.9552509053285049,
+        "f1-score": 0.8840215439856374,
+        "support": 3866.0
+      },
+      "3着以内": {
+        "precision": 0.5675,
+        "recall": 0.22189638318670576,
+        "f1-score": 0.3190442726633872,
+        "support": 1023.0
+      },
+      "accuracy": 0.8017999590918389,
+      "macro avg": {
+        "precision": 0.6950888282468255,
+        "recall": 0.5885736442576053,
+        "f1-score": 0.6015329083245122,
+        "support": 4889.0
+      },
+      "weighted avg": {
+        "precision": 0.769282945388516,
+        "recall": 0.8017999590918389,
+        "f1-score": 0.76580273675253,
+        "support": 4889.0
+      }
+    },
+    "roc_auc": 0.7729471255788363,
+    "average_precision": 0.45453734991674877,
+    "race_level_top3": {
+      "races": 341,
+      "mean_correct_picks": 1.434017595307918,
+      "precision_at_3": 0.4780058651026393,
+      "recall_at_3": 0.4780058651026393,
+      "race_with_any_top3_hit_rate": 0.9090909090909091,
+      "winner_hit_rate": 0.5865102639296188,
+      "exact_top3_set_rate": 0.06451612903225806
+    },
+    "popularity_baseline": {
+      "races": 341,
+      "mean_correct_picks": 1.4516129032258065,
+      "precision_at_3": 0.4838709677419355,
+      "recall_at_3": 0.4838709677419355,
+      "race_with_any_top3_hit_rate": 0.906158357771261,
+      "winner_hit_rate": 0.5777126099706745,
+      "exact_top3_set_rate": 0.06451612903225806
+    }
+  },
+  "split": {
+    "train_end": "2020-09-12",
+    "validation_start": "2020-09-13",
+    "validation_end": "2023-09-17",
+    "test_start": "2023-09-18"
+  },
+  "deployment_model_trained_through": "2026-10-18"
 }

@@ -20,6 +20,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import sqlite3
 import sys
@@ -196,6 +197,65 @@ def find_column(
     return None
 
 
+def align_horse_row(headers: list[str], row) -> tuple[list[str], list]:
+    """
+    JRAの一部HTMLでは、記号欄や馬体重増減がヘッダーと別セルになる。
+    行に合わせて見出しを補い、後続列のずれを防ぐ。
+    """
+    cells = row.find_all(["td", "th"], recursive=False)
+    if not cells:
+        cells = row.find_all(["td", "th"])
+
+    aligned_headers = list(headers)
+    symbol_cells = [
+        cell
+        for cell in cells
+        if "kigouCol" in (cell.get("class") or [])
+    ]
+    if symbol_cells and find_column(aligned_headers, "記号") is None:
+        symbol_index = cells.index(symbol_cells[0])
+        aligned_headers.insert(symbol_index, "記号")
+
+    jockey_index = find_column(aligned_headers, "騎手", "騎手名")
+    body_weight_index = find_column(
+        aligned_headers, "馬体重", "馬体重（増減）"
+    )
+
+    if (
+        len(cells) > len(aligned_headers)
+        and jockey_index is not None
+        and jockey_index + 1 < len(cells)
+        and not normalize_text(cells[jockey_index].get_text(" ", strip=True))
+    ):
+        next_text = normalize_text(
+            cells[jockey_index + 1].get_text(" ", strip=True)
+        )
+        if next_text and not re.match(r"^\d+[:：]\d", next_text):
+            aligned_headers.insert(jockey_index, "記号")
+
+    body_weight_index = find_column(
+        aligned_headers, "馬体重", "馬体重（増減）"
+    )
+    if (
+        len(cells) > len(aligned_headers)
+        and body_weight_index is not None
+        and body_weight_index + 1 < len(cells)
+    ):
+        body_weight_text = normalize_text(
+            cells[body_weight_index].get_text(" ", strip=True)
+        )
+        weight_change_text = normalize_text(
+            cells[body_weight_index + 1].get_text(" ", strip=True)
+        )
+        if (
+            re.match(r"^\d{2,3}(?:Kg)?$", body_weight_text, re.IGNORECASE)
+            and re.fullmatch(r"(?:[+-]\d+|0)", weight_change_text)
+        ):
+            aligned_headers.insert(body_weight_index + 1, "馬体重増減")
+
+    return aligned_headers, cells
+
+
 def cell_text(cells, index: int | None) -> str | None:
     if index is None or index < 0 or index >= len(cells):
         return None
@@ -292,6 +352,37 @@ def init_db(conn: sqlite3.Connection) -> None:
             ON payouts(race_id);
         """
     )
+
+    optional_columns = {
+        "races": {
+            "race_number": "INTEGER",
+            "start_time": "TEXT",
+            "weather": "TEXT",
+            "turf_condition": "TEXT",
+            "dirt_condition": "TEXT",
+            "race_grade": "TEXT",
+            "race_conditions": "TEXT",
+        },
+        "horses": {
+            "horse_mark": "TEXT",
+            "corner_order": "TEXT",
+            "horse_url": "TEXT",
+            "jockey_url": "TEXT",
+            "trainer_url": "TEXT",
+            "source_fields": "TEXT",
+        },
+        "payouts": {
+            "popularity": "INTEGER",
+        },
+    }
+    for table, columns in optional_columns.items():
+        existing_columns = get_table_columns(conn, table)
+        for column, data_type in columns.items():
+            if column not in existing_columns:
+                conn.execute(
+                    f'ALTER TABLE "{table}" '
+                    f'ADD COLUMN "{column}" {data_type}'
+                )
     conn.commit()
 
 
@@ -303,7 +394,7 @@ def get_table_columns(
         f'PRAGMA table_info("{table_name}")'
     ).fetchall()
 
-    return {row["name"] for row in rows}
+    return {row[1] for row in rows}
 
 
 def save_error(
@@ -394,6 +485,13 @@ def extract_race_info(
         "distance_m": None,
         "surface": None,
         "direction": None,
+        "race_number": None,
+        "start_time": None,
+        "weather": None,
+        "turf_condition": None,
+        "dirt_condition": None,
+        "race_grade": None,
+        "race_conditions": {},
         "crawled_at": datetime.now().isoformat(timespec="seconds"),
     }
     page_text = normalize_text(soup.get_text(" ", strip=True))
@@ -596,6 +694,101 @@ def extract_race_info(
         if direction_match and not info["direction"]:
             info["direction"] = direction_match.group(1)
 
+    race_number_image = soup.select_one(".race_number img[alt]")
+    if race_number_image:
+        info["race_number"] = to_int(race_number_image.get("alt"))
+    if not info["race_number"]:
+        race_title_text = " ".join(
+            normalize_text(element.get_text(" ", strip=True))
+            for element in soup.select(".race_title, h3")
+        )
+        race_title_text = unicodedata.normalize(
+            "NFKC",
+            f"{race_title_text} {legacy_header} {page_text}",
+        )
+        race_number_match = re.search(
+            r"\b(\d{1,2})\s*R\s*(?:第|$)",
+            race_title_text,
+            re.IGNORECASE,
+        )
+        if race_number_match:
+            info["race_number"] = int(race_number_match.group(1))
+
+    time_match = re.search(
+        r"発走(?:時刻)?\s*[：:]?\s*(\d{1,2})\s*(?:時|[:：])\s*(\d{2})",
+        normalized_page_text,
+    )
+    if time_match:
+        info["start_time"] = (
+            f"{int(time_match.group(1)):02d}:"
+            f"{int(time_match.group(2)):02d}"
+        )
+
+    for condition, selectors in (
+        ("weather", (".weather .txt",)),
+        ("turf_condition", (".turf .txt",)),
+        ("dirt_condition", (".dirt .txt",)),
+    ):
+        element = next(
+            (
+                soup.select_one(selector)
+                for selector in selectors
+                if soup.select_one(selector)
+            ),
+            None,
+        )
+        if element:
+            info[condition] = normalize_text(
+                element.get_text(" ", strip=True)
+            )
+
+    if not info["weather"]:
+        weather_match = re.search(
+            r"天候\s*[：:]?\s*(晴|曇|雨|小雨|雪|小雪)",
+            normalized_page_text,
+        )
+        if weather_match:
+            info["weather"] = weather_match.group(1)
+    if not info["turf_condition"]:
+        turf_match = re.search(r"芝\s*[：:]?\s*(良|稍重|重|不良)", normalized_page_text)
+        if turf_match:
+            info["turf_condition"] = turf_match.group(1)
+    if not info["dirt_condition"]:
+        dirt_match = re.search(
+            r"(?:ダート|ダ)\s*[：:]?\s*(良|稍重|重|不良)",
+            normalized_page_text,
+        )
+        if dirt_match:
+            info["dirt_condition"] = dirt_match.group(1)
+
+    race_conditions = {}
+    for element in soup.select(".race_title .type .cell"):
+        classes = element.get("class") or []
+        key = next(
+            (
+                name
+                for name in ("category", "class", "rule", "weight", "course")
+                if name in classes
+            ),
+            None,
+        )
+        value = normalize_text(element.get_text(" ", strip=True))
+        if key and value:
+            race_conditions[key] = value
+    info["race_conditions"] = race_conditions
+
+    grade_image = soup.select_one(".grade_icon img[alt]")
+    if grade_image:
+        info["race_grade"] = normalize_text(grade_image.get("alt"))
+    if not info["race_grade"]:
+        grade_match = re.search(
+            r"[（(](G(?:I{1,3}|IV)|GI{1,3}|Jpn[ⅠⅡⅢ123])",
+            normalized_page_text,
+            re.IGNORECASE,
+        )
+        if grade_match:
+            info["race_grade"] = grade_match.group(1)
+
     # 日付が見つからない場合、URL年度だけを使って日付を捏造しない
     return info
 
@@ -679,36 +872,43 @@ def parse_horses(soup: BeautifulSoup) -> list[dict]:
     if table is None:
         return []
 
-    indexes = {
-        "finish": find_column(headers, "着順", "順位"),
-        "frame": find_column(headers, "枠", "枠番"),
-        "horse_number": find_column(headers, "馬番", "馬番号"),
-        "horse_name": find_column(headers, "馬名"),
-        "sex_age": find_column(headers, "性齢"),
-        "sex": find_column(headers, "性"),
-        "age": find_column(headers, "齢", "年齢"),
-        "weight": find_column(headers, "負担重量", "斤量"),
-        "jockey": find_column(headers, "騎手名", "騎手"),
-        "time": find_column(headers, "タイム"),
-        "margin": find_column(headers, "着差"),
-        "last_3f": find_column(headers, "推定上り", "上り"),
-        "body_weight": find_column(headers, "馬体重", "馬体重（増減）"),
-        "trainer": find_column(headers, "調教師名", "調教師"),
-        "odds": find_column(headers, "単勝オッズ", "オッズ"),
-        "popularity": find_column(headers, "人気", "単勝人気"),
-    }
-
     horses: list[dict] = []
     rows = table.find_all("tr")
 
     for row in rows[header_row + 1:]:
-        cells = row.find_all(["td", "th"], recursive=False)
-
-        if not cells:
-            cells = row.find_all(["td", "th"])
+        row_headers, cells = align_horse_row(headers, row)
 
         if not cells:
             continue
+
+        indexes = {
+            "finish": find_column(row_headers, "着順", "順位"),
+            "frame": find_column(row_headers, "枠", "枠番"),
+            "horse_number": find_column(row_headers, "馬番", "馬番号"),
+            "horse_name": find_column(row_headers, "馬名"),
+            "sex_age": find_column(row_headers, "性齢"),
+            "sex": find_column(row_headers, "性"),
+            "age": find_column(row_headers, "齢", "年齢"),
+            "weight": find_column(row_headers, "負担重量", "斤量"),
+            "jockey": find_column(row_headers, "騎手名", "騎手"),
+            "time": find_column(row_headers, "タイム"),
+            "margin": find_column(row_headers, "着差"),
+            "last_3f": find_column(row_headers, "推定上り", "上り"),
+            "body_weight": find_column(
+                row_headers, "馬体重", "馬体重（増減）"
+            ),
+            "weight_change": find_column(
+                row_headers, "馬体重増減", "増減"
+            ),
+            "trainer": find_column(row_headers, "調教師名", "調教師"),
+            "odds": find_column(
+                row_headers, "単勝オッズ", "オッズ", "単勝"
+            ),
+            "popularity": find_column(
+                row_headers, "人気", "単勝人気"
+            ),
+            "horse_mark": find_column(row_headers, "記号", "馬記号"),
+        }
 
         horse_name = cell_text(cells, indexes["horse_name"])
         horse_number = to_int(cell_text(cells, indexes["horse_number"]))
@@ -735,9 +935,23 @@ def parse_horses(soup: BeautifulSoup) -> list[dict]:
             sex_age = "".join(part or "" for part in sex_age_parts) or None
 
         jockey = cell_text(cells, indexes["jockey"])
+        frame = to_int(cell_text(cells, indexes["frame"]))
+        frame_index = indexes["frame"]
+        if frame is None and frame_index is not None and frame_index < len(cells):
+            frame_image = cells[frame_index].select_one("img[alt]")
+            if frame_image:
+                frame_match = re.search(
+                    r"枠\s*(\d+)",
+                    normalize_text(frame_image.get("alt", "")),
+                )
+                if frame_match:
+                    frame = int(frame_match.group(1))
 
         body_weight_text = cell_text(
             cells, indexes["body_weight"]
+        )
+        weight_change_text = cell_text(
+            cells, indexes["weight_change"]
         )
 
         # 例: 426 (+12) → 426 / +12
@@ -750,18 +964,34 @@ def parse_horses(soup: BeautifulSoup) -> list[dict]:
                 body_weight = int(weight_match.group(1))
 
             change_match = re.search(
-                r"\(?\s*([+-]\d+)\s*\)?",
-                body_weight_text,
+                r"(?:^|\s)\(?([+-]\d+|0)\)?\s*$",
+                weight_change_text or body_weight_text,
             )
             if change_match:
                 weight_change = int(change_match.group(1))
 
+        raw_fields = {}
+        for index, header in enumerate(row_headers):
+            field_name = normalize_header(header) or f"column_{index}"
+            if field_name in raw_fields:
+                field_name = f"{field_name}_{index}"
+            value = cell_text(cells, index)
+            if value is not None:
+                raw_fields[field_name] = value
+
+        def linked_url(index: int | None) -> str | None:
+            if index is None or index >= len(cells):
+                return None
+            anchor = cells[index].select_one("a[href]")
+            return urljoin(BASE_URL, anchor["href"]) if anchor else None
+
         horses.append(
             {
                 "finish": finish,
-                "frame": to_int(cell_text(cells, indexes["frame"])),
+                "frame": frame,
                 "horse_number": horse_number,
                 "horse_name": horse_name,
+                "horse_mark": cell_text(cells, indexes["horse_mark"]),
                 "sex_age": sex_age,
                 "weight": to_float(cell_text(cells, indexes["weight"])),
                 "jockey": jockey,
@@ -775,6 +1005,18 @@ def parse_horses(soup: BeautifulSoup) -> list[dict]:
                 "popularity": to_int(
                     cell_text(cells, indexes["popularity"])
                 ),
+                "corner_order": next(
+                    (
+                        cell_text(cells, index)
+                        for index, header in enumerate(row_headers)
+                        if "コーナー" in normalize_header(header)
+                    ),
+                    None,
+                ),
+                "horse_url": linked_url(indexes["horse_name"]),
+                "jockey_url": linked_url(indexes["jockey"]),
+                "trainer_url": linked_url(indexes["trainer"]),
+                "source_fields": raw_fields,
             }
         )
 
@@ -953,6 +1195,16 @@ def save_race(
         "distance_m": race.get("distance_m"),
         "surface": race.get("surface"),
         "direction": race.get("direction"),
+        "race_number": race.get("race_number"),
+        "start_time": race.get("start_time"),
+        "weather": race.get("weather"),
+        "turf_condition": race.get("turf_condition"),
+        "dirt_condition": race.get("dirt_condition"),
+        "race_grade": race.get("race_grade"),
+        "race_conditions": json.dumps(
+            race.get("race_conditions", {}),
+            ensure_ascii=False,
+        ),
         "crawled_at": race.get("crawled_at"),
     }
 
@@ -1009,6 +1261,7 @@ def save_race(
                 "horse_number": horse.get("horse_number"),
                 "horse_name": horse.get("horse_name"),
                 "sex_age": horse.get("sex_age"),
+                "horse_mark": horse.get("horse_mark"),
                 "weight": horse.get("weight"),
                 "jockey": horse.get("jockey"),
                 "time": horse.get("time"),
@@ -1019,6 +1272,14 @@ def save_race(
                 "trainer": horse.get("trainer"),
                 "popularity": horse.get("popularity"),
                 "odds": horse.get("odds"),
+                "corner_order": horse.get("corner_order"),
+                "horse_url": horse.get("horse_url"),
+                "jockey_url": horse.get("jockey_url"),
+                "trainer_url": horse.get("trainer_url"),
+                "source_fields": json.dumps(
+                    horse.get("source_fields", {}),
+                    ensure_ascii=False,
+                ),
             }
 
             values = {
@@ -1045,6 +1306,7 @@ def save_race(
                     "bet_type": payout.get("bet_type"),
                     "combination": payout.get("combination"),
                     "amount": payout.get("amount"),
+                    "popularity": payout.get("popularity"),
                 }
 
                 values = {
