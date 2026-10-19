@@ -5,6 +5,5 @@ __pycache__/
 data/raw/*
 data/processed/*
 data/db/*
-data/keiba.db
 models/*
 !.gitkeep

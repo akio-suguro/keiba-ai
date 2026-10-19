@@ -130,6 +130,25 @@ class JraSearchTests(unittest.TestCase):
             ],
         )
 
+    def test_current_month_without_completed_races_is_not_an_error(self):
+        today = date.today()
+        with (
+            patch.object(
+                crawl_jra,
+                "fetch_jra_search_page",
+                return_value=BeautifulSoup("", "html.parser"),
+            ),
+            patch.object(crawl_jra.time, "sleep"),
+        ):
+            days = crawl_jra.discover_race_days(
+                today.year,
+                today.month,
+                {f"{today.year % 100:02d}{today.month:02d}": "3F"},
+                today=today,
+            )
+
+        self.assertEqual(days, [])
+
     def test_reads_race_date_venue_and_number_from_result_cname(self):
         cname = "pw01sde1006202501010120250105/6B"
 
@@ -251,6 +270,36 @@ class SaveRaceDeduplicationTests(unittest.TestCase):
         self.assertTrue(already_saved)
 
 
+class UnconfirmedRaceTests(unittest.TestCase):
+    def test_unconfirmed_current_day_result_is_skipped_without_error_record(self):
+        today = date.today()
+        cname = (
+            f"pw01sde1006{today.year}010101{today:%Y%m%d}/6B"
+        )
+        with sqlite3.connect(":memory:") as conn:
+            with (
+                patch.object(
+                    crawl_jra,
+                    "fetch_jra_search_page",
+                    return_value=BeautifulSoup("", "html.parser"),
+                ),
+                patch.object(
+                    crawl_jra,
+                    "extract_race_info",
+                    return_value={"race_date": None},
+                ),
+                patch.object(crawl_jra, "save_error") as save_error,
+            ):
+                result = crawl_jra.crawl_one_race(
+                    conn,
+                    crawl_jra.race_result_url(cname),
+                    allow_unconfirmed_today=True,
+                )
+
+        self.assertEqual(result, (0, 0, None))
+        save_error.assert_not_called()
+
+
 class MainCrawlerTests(unittest.TestCase):
     def test_main_crawls_all_result_links_discovered_for_a_month(self):
         year = date.today().year - 1
@@ -347,6 +396,88 @@ class MainCrawlerTests(unittest.TestCase):
 
         self.assertEqual(result, 0)
         self.assertEqual(scanned_months, expected_newest_months)
+
+    def test_main_stops_without_crawling_when_database_is_at_size_limit(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with (
+                patch.object(
+                    crawl_jra,
+                    "DB_PATH",
+                    Path(temp_dir) / "test.sqlite",
+                ),
+                patch.object(crawl_jra, "YEARS", [date.today().year]),
+                patch.object(
+                    crawl_jra,
+                    "database_size_bytes",
+                    return_value=crawl_jra.MAX_DATABASE_SIZE_BYTES,
+                ),
+                patch.object(crawl_jra, "year_month_checkdigits") as checkdigits,
+                patch.object(crawl_jra.SESSION, "close"),
+            ):
+                result = crawl_jra.main()
+
+        self.assertEqual(result, 0)
+        checkdigits.assert_not_called()
+
+    def test_main_stops_after_a_race_reaches_database_size_limit(self):
+        year = date.today().year - 1
+        day_cname = f"pw01srl1006{year}0101{year}0105/DA"
+        race_cname = f"pw01sde1006{year}010101{year}0105/6B"
+        checkdigits = {
+            f"{year % 100:02d}{month:02d}": "3F"
+            for month in range(1, 13)
+        }
+        size_values = iter(
+            [0, crawl_jra.MAX_DATABASE_SIZE_BYTES]
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with (
+                patch.object(
+                    crawl_jra,
+                    "DB_PATH",
+                    Path(temp_dir) / "test.sqlite",
+                ),
+                patch.object(crawl_jra, "YEARS", [year]),
+                patch.object(
+                    crawl_jra,
+                    "database_size_bytes",
+                    side_effect=lambda: next(size_values),
+                ),
+                patch.object(
+                    crawl_jra,
+                    "year_month_checkdigits",
+                    return_value=checkdigits,
+                ),
+                patch.object(
+                    crawl_jra,
+                    "discover_race_days",
+                    side_effect=lambda _year, month, *_args, **_kwargs: (
+                        [day_cname] if month == 1 else []
+                    ),
+                ) as discover_race_days,
+                patch.object(
+                    crawl_jra,
+                    "discover_race_cnames_for_day",
+                    return_value=[race_cname],
+                ),
+                patch.object(
+                    crawl_jra,
+                    "race_result_already_saved",
+                    return_value=False,
+                ),
+                patch.object(
+                    crawl_jra,
+                    "crawl_one_race",
+                    return_value=(16, 12, True),
+                ) as crawl_one_race,
+                patch.object(crawl_jra.SESSION, "close"),
+            ):
+                result = crawl_jra.main()
+
+        self.assertEqual(result, 0)
+        crawl_one_race.assert_called_once()
+        self.assertEqual(discover_race_days.call_count, 12)
 
 
 class LegacyRacePageTests(unittest.TestCase):

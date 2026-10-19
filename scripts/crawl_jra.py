@@ -6,8 +6,12 @@
 #
 # ログ:
 #   [OK]    正常取得したレース
+#   [WAIT]  当日未確定レースのスキップ
 #   [ERROR] 取得・解析・保存エラー
+#   [STOP]  DB容量上限で巡回終了
 #   [DONE]  最終集計
+#
+# DBファイルが90,000,000バイト以上になると巡回を終了する。
 #
 # 既存DB:
 #   races(id, url, race_date, venue, race_name,
@@ -47,6 +51,7 @@ CURRENT_YEAR = datetime.now().year
 YEARS = list(range(CURRENT_YEAR, START_YEAR - 1, -1))
 
 DB_PATH = Path("data/keiba.db")
+MAX_DATABASE_SIZE_BYTES = 90_000_000
 
 REQUEST_INTERVAL = 5
 REQUEST_TIMEOUT = 30
@@ -319,6 +324,14 @@ def connect_db() -> sqlite3.Connection:
     return conn
 
 
+def database_size_bytes() -> int:
+    """SQLite DBファイルの現在サイズをバイト単位で返す。"""
+    try:
+        return DB_PATH.stat().st_size
+    except FileNotFoundError:
+        return 0
+
+
 def init_db(conn: sqlite3.Connection) -> None:
     """
     テーブルが存在しない新規DBの場合に作成する。
@@ -559,6 +572,8 @@ def discover_race_days(
         if race_date.year == year and race_date.month == month and race_date <= current_date:
             race_days.append(cname)
     if not race_days:
+        if year == current_date.year and month == current_date.month:
+            return []
         raise RuntimeError(
             f"{year}年{month}月の開催日リンクを取得できませんでした"
         )
@@ -1549,7 +1564,9 @@ def save_race(
 def crawl_one_race(
     conn: sqlite3.Connection,
     url: str,
-) -> tuple[int, int, bool]:
+    *,
+    allow_unconfirmed_today: bool = False,
+) -> tuple[int, int, bool | None]:
     try:
         parsed_url = urlparse(url)
         cname = None
@@ -1577,9 +1594,13 @@ def crawl_one_race(
         horses = parse_horses(soup)
         payouts = parse_payouts(soup)
 
-        if not horses:
+        if len(horses) < 5:
+            if allow_unconfirmed_today:
+                print(f"[WAIT] 当日レースの結果が未確定のためスキップ: {url}")
+                return 0, 0, None
             raise ValueError(
-                "出走馬データが0件です。HTML構造の確認が必要です"
+                f"出走馬データが少なすぎます（{len(horses)}件）。"
+                "HTML構造の確認が必要です"
             )
 
         save_race(conn, race, horses, payouts)
@@ -1609,25 +1630,45 @@ def main() -> int:
     total_ok = 0
     total_error = 0
     total_skipped = 0
+    total_unconfirmed = 0
     total_horses = 0
     total_payouts = 0
 
     try:
         init_db(conn)
-        try:
-            checkdigits = year_month_checkdigits()
-        except Exception as exc:
-            print(f"[ERROR] JRA検索の年月情報 | {type(exc).__name__}: {exc}")
-            save_error(conn, JRA_DB_URL, exc)
+        size_limit_reached = database_size_bytes() >= MAX_DATABASE_SIZE_BYTES
+        if size_limit_reached:
+            print(
+                f"[STOP] DB容量が上限に達しています: "
+                f"{database_size_bytes():,} / "
+                f"{MAX_DATABASE_SIZE_BYTES:,} bytes"
+            )
             checkdigits = {}
-            total_error += 1
+        else:
+            try:
+                checkdigits = year_month_checkdigits()
+            except Exception as exc:
+                print(f"[ERROR] JRA検索の年月情報 | {type(exc).__name__}: {exc}")
+                save_error(conn, JRA_DB_URL, exc)
+                checkdigits = {}
+                total_error += 1
 
         today = datetime.now().date()
         for year in (YEARS if checkdigits else []):
+            if size_limit_reached:
+                break
             last_month = today.month if year == today.year else 12
             for month in range(last_month, 0, -1):
+                if size_limit_reached:
+                    break
                 yymm = f"{year % 100:02d}{month:02d}"
                 if yymm not in checkdigits:
+                    if year == today.year and month == today.month:
+                        print(
+                            f"[WAIT] {year}年{month}月の検索情報は"
+                            "まだ公開されていません"
+                        )
+                        continue
                     exc = ValueError(
                         f"JRA検索のチェック文字列がありません: {yymm}"
                     )
@@ -1661,6 +1702,8 @@ def main() -> int:
                 )
 
                 for race_day_cname in reversed(race_days):
+                    if size_limit_reached:
+                        break
                     try:
                         race_cnames = discover_race_cnames_for_day(
                             race_day_cname
@@ -1689,6 +1732,8 @@ def main() -> int:
                         continue
 
                     for cname in reversed(race_cnames):
+                        if size_limit_reached:
+                            break
                         try:
                             details = race_cname_details(cname)
                             if details["race_date"] > today.isoformat():
@@ -1705,18 +1750,40 @@ def main() -> int:
                             total_error += 1
                             continue
 
-                        horse_count, payout_count, success = crawl_one_race(
-                            conn,
-                            race_result_url(cname),
+                        allow_unconfirmed_today = (
+                            year == today.year
+                            and details["race_date"] == today.isoformat()
                         )
+                        if allow_unconfirmed_today:
+                            result = crawl_one_race(
+                                conn,
+                                race_result_url(cname),
+                                allow_unconfirmed_today=True,
+                            )
+                        else:
+                            result = crawl_one_race(
+                                conn,
+                                race_result_url(cname),
+                            )
+                        horse_count, payout_count, success = result
 
-                        if success:
+                        if success is None:
+                            total_unconfirmed += 1
+                        elif success:
                             total_ok += 1
                             total_horses += horse_count
                             total_payouts += payout_count
                         else:
                             total_error += 1
 
+                        db_size = database_size_bytes()
+                        if db_size >= MAX_DATABASE_SIZE_BYTES:
+                            print(
+                                f"[STOP] DB容量が上限に達しました: "
+                                f"{db_size:,} / "
+                                f"{MAX_DATABASE_SIZE_BYTES:,} bytes"
+                            )
+                            size_limit_reached = True
 
     finally:
         conn.close()
@@ -1725,6 +1792,7 @@ def main() -> int:
     print(
         f"[DONE] 新規・更新 {total_ok}レース "
         f"| 保存済みスキップ {total_skipped}レース "
+        f"| 未確定スキップ {total_unconfirmed}レース "
         f"| 失敗 {total_error}件 "
         f"| 馬 {total_horses}件 "
         f"| 払戻 {total_payouts}件"
