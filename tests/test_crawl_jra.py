@@ -1,6 +1,9 @@
 import sqlite3
+import tempfile
 import unittest
-from unittest.mock import patch
+from datetime import date
+from pathlib import Path
+from unittest.mock import ANY, patch
 
 from bs4 import BeautifulSoup
 
@@ -11,7 +14,7 @@ class RaceIndexUrlTests(unittest.TestCase):
     def test_years_cover_start_year_through_current_year(self):
         self.assertEqual(
             crawl_jra.YEARS,
-            list(range(crawl_jra.START_YEAR, crawl_jra.CURRENT_YEAR + 1)),
+            list(range(crawl_jra.CURRENT_YEAR, crawl_jra.START_YEAR - 1, -1)),
         )
 
     def test_current_year_uses_replay_root(self):
@@ -67,6 +70,83 @@ class RaceIndexUrlTests(unittest.TestCase):
         )
 
 
+class JraSearchTests(unittest.TestCase):
+    def test_extracts_cnames_from_onclick_and_deduplicates(self):
+        soup = BeautifulSoup(
+            """
+            <a href="#" onclick="return doAction(
+              '/JRADB/accessS.html',
+              'pw01srl10062025010120250105/DA'
+            );">開催日</a>
+            <a href="/JRADB/accessS.html?CNAME=pw01srl10072025010120250105/24">
+              同日別会場
+            </a>
+            <a href="#" onclick="return doAction(
+              '/JRADB/accessS.html',
+              'pw01srl10062025010120250105/DA'
+            );">重複</a>
+            """,
+            "html.parser",
+        )
+
+        self.assertEqual(
+            crawl_jra.extract_cnames(soup, "pw01srl"),
+            [
+                "pw01srl10062025010120250105/DA",
+                "pw01srl10072025010120250105/24",
+            ],
+        )
+
+    def test_discovers_only_race_days_in_the_requested_past_month(self):
+        soup = BeautifulSoup(
+            """
+            <a onclick="doAction('pw01srl10062025010120250105/DA')">5日</a>
+            <a onclick="doAction('pw01srl10062025020120250201/AA')">2月</a>
+            <a onclick="doAction('pw01srl10062025013120250131/BB')">31日</a>
+            """,
+            "html.parser",
+        )
+        with (
+            patch.object(
+                crawl_jra,
+                "fetch_jra_search_page",
+                return_value=soup,
+            ) as fetch_page,
+            patch.object(crawl_jra.time, "sleep"),
+        ):
+            days = crawl_jra.discover_race_days(
+                2025,
+                1,
+                {"2501": "3F"},
+                today=date(2025, 1, 31),
+            )
+
+        fetch_page.assert_called_once_with("pw01skl10202501/3F")
+        self.assertEqual(
+            days,
+            [
+                "pw01srl10062025010120250105/DA",
+                "pw01srl10062025013120250131/BB",
+            ],
+        )
+
+    def test_reads_race_date_venue_and_number_from_result_cname(self):
+        cname = "pw01sde1006202501010120250105/6B"
+
+        self.assertEqual(
+            crawl_jra.race_cname_details(cname),
+            {
+                "race_date": "2025-01-05",
+                "venue": "中山",
+                "race_number": 1,
+            },
+        )
+
+    def test_rejects_invalid_race_cname(self):
+        with self.assertRaisesRegex(ValueError, "形式が不正"):
+            crawl_jra.race_cname_details("pw01sde-invalid")
+
+
 class DatabaseMigrationTests(unittest.TestCase):
     def test_adds_optional_result_columns_to_existing_tables(self):
         with sqlite3.connect(":memory:") as conn:
@@ -106,6 +186,167 @@ class DatabaseMigrationTests(unittest.TestCase):
             }.issubset(horses)
         )
         self.assertIn("popularity", payouts)
+
+
+class SaveRaceDeduplicationTests(unittest.TestCase):
+    def test_general_race_updates_matching_existing_static_race(self):
+        with sqlite3.connect(":memory:") as conn:
+            conn.row_factory = sqlite3.Row
+            crawl_jra.init_db(conn)
+            static_url = (
+                "https://www.jra.go.jp/datafile/seiseki/replay/2025/001.html"
+            )
+            conn.execute(
+                """
+                INSERT INTO races (
+                    url, race_date, venue, race_name, distance_m
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    static_url,
+                    "2025-01-05",
+                    "中山",
+                    "中山金杯",
+                    2000,
+                ),
+            )
+            race = {
+                "url": (
+                    "https://www.jra.go.jp/JRADB/accessS.html?"
+                    "CNAME=pw01sde1006202501010120250105/6B"
+                ),
+                "race_date": "2025-01-05",
+                "venue": "中山",
+                "race_name": "中山金杯",
+                "distance_m": 2000,
+                "race_number": 1,
+            }
+            horses = [
+                {
+                    "finish": number,
+                    "horse_number": number,
+                    "horse_name": f"Horse {number}",
+                }
+                for number in range(1, 6)
+            ]
+
+            crawl_jra.save_race(conn, race, horses, [])
+
+            races = conn.execute(
+                "SELECT id, url, race_number FROM races"
+            ).fetchall()
+            horse_count = conn.execute(
+                "SELECT COUNT(*) FROM horses WHERE race_id = ?",
+                (races[0]["id"],),
+            ).fetchone()[0]
+            already_saved = crawl_jra.race_result_already_saved(
+                conn,
+                "pw01sde1006202501010120250105/6B",
+            )
+
+        self.assertEqual(len(races), 1)
+        self.assertEqual(races[0]["url"], static_url)
+        self.assertEqual(races[0]["race_number"], 1)
+        self.assertEqual(horse_count, 5)
+        self.assertTrue(already_saved)
+
+
+class MainCrawlerTests(unittest.TestCase):
+    def test_main_crawls_all_result_links_discovered_for_a_month(self):
+        year = date.today().year - 1
+        day_cname = f"pw01srl1006{year}0101{year}0105/DA"
+        race_cname = f"pw01sde1006{year}010101{year}0105/6B"
+        checkdigits = {
+            f"{year % 100:02d}{month:02d}": "3F"
+            for month in range(1, 13)
+        }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with (
+                patch.object(
+                    crawl_jra,
+                    "DB_PATH",
+                    Path(temp_dir) / "test.sqlite",
+                ),
+                patch.object(crawl_jra, "YEARS", [year]),
+                patch.object(
+                    crawl_jra,
+                    "year_month_checkdigits",
+                    return_value=checkdigits,
+                ),
+                patch.object(
+                    crawl_jra,
+                    "discover_race_days",
+                    side_effect=lambda discovered_year, month, *_args, **_kwargs: (
+                        [day_cname] if month == 1 else []
+                    ),
+                ),
+                patch.object(
+                    crawl_jra,
+                    "discover_race_cnames_for_day",
+                    return_value=[race_cname],
+                ),
+                patch.object(
+                    crawl_jra,
+                    "race_result_already_saved",
+                    return_value=False,
+                ),
+                patch.object(
+                    crawl_jra,
+                    "crawl_one_race",
+                    return_value=(16, 12, True),
+                ) as crawl_one_race,
+                patch.object(crawl_jra.SESSION, "close"),
+            ):
+                result = crawl_jra.main()
+
+        self.assertEqual(result, 0)
+        crawl_one_race.assert_called_once_with(
+            ANY,
+            crawl_jra.race_result_url(race_cname),
+        )
+
+    def test_main_scans_years_and_months_newest_first(self):
+        years = [2026, 2025]
+        checkdigits = {
+            f"{year % 100:02d}{month:02d}": "3F"
+            for year in years
+            for month in range(1, 13)
+        }
+        scanned_months = []
+        expected_newest_months = [
+            (2026, month)
+            for month in range(date.today().month, 0, -1)
+        ] + [(2025, month) for month in range(12, 0, -1)]
+
+        def record_month(year, month, *_args, **_kwargs):
+            scanned_months.append((year, month))
+            return []
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with (
+                patch.object(
+                    crawl_jra,
+                    "DB_PATH",
+                    Path(temp_dir) / "test.sqlite",
+                ),
+                patch.object(crawl_jra, "YEARS", years),
+                patch.object(
+                    crawl_jra,
+                    "year_month_checkdigits",
+                    return_value=checkdigits,
+                ),
+                patch.object(
+                    crawl_jra,
+                    "discover_race_days",
+                    side_effect=record_month,
+                ),
+                patch.object(crawl_jra.SESSION, "close"),
+            ):
+                result = crawl_jra.main()
+
+        self.assertEqual(result, 0)
+        self.assertEqual(scanned_months, expected_newest_months)
 
 
 class LegacyRacePageTests(unittest.TestCase):

@@ -1,5 +1,5 @@
 # scripts/crawl_jra.py
-# JRA重賞レース結果クローラー
+# JRA全レース結果クローラー
 # 対象: 2002年〜現在
 #
 # HTMLはメモリ上で解析し、ファイルには保存しない。
@@ -28,7 +28,7 @@ import time
 import unicodedata
 from datetime import datetime
 from pathlib import Path
-from urllib.parse import urljoin, urlparse
+from urllib.parse import parse_qs, urljoin, urlparse
 
 import requests
 from bs4 import BeautifulSoup
@@ -39,14 +39,16 @@ from bs4 import BeautifulSoup
 # ============================================================
 
 BASE_URL = "https://www.jra.go.jp"
+JRA_DB_URL = f"{BASE_URL}/JRADB/accessS.html"
+JRA_CHECKDIGIT_CNAME = "pw01skl00999999/B3"
 
 START_YEAR = 2002
 CURRENT_YEAR = datetime.now().year
-YEARS = list(range(START_YEAR, CURRENT_YEAR + 1))
+YEARS = list(range(CURRENT_YEAR, START_YEAR - 1, -1))
 
 DB_PATH = Path("data/keiba.db")
 
-REQUEST_INTERVAL = 2
+REQUEST_INTERVAL = 5
 REQUEST_TIMEOUT = 30
 
 HEADERS = {
@@ -74,11 +76,40 @@ BET_TYPES = {
 RACE_URL_PATTERN = re.compile(
     r"/datafile/seiseki/replay/(\d{4})/(\d{3})\.html"
 )
+RACE_CNAME_PATTERN = re.compile(
+    r"^pw01sde10"
+    r"(?P<venue_code>\d{2})"
+    r"(?P<year>\d{4})"
+    r"\d{4}"
+    r"(?P<race_number>\d{2})"
+    r"(?P<race_date>\d{8})/"
+    r"[0-9A-Z]+$",
+    re.IGNORECASE,
+)
+RACE_DAY_DATE_PATTERN = re.compile(
+    r"(?P<race_date>\d{8})/[0-9A-Z]+$",
+    re.IGNORECASE,
+)
 
 VENUES = (
     "札幌", "函館", "福島", "新潟", "東京",
     "中山", "中京", "京都", "阪神", "小倉",
 )
+
+JRA_VENUE_CODES = {
+    "01": "札幌",
+    "02": "函館",
+    "03": "福島",
+    "04": "新潟",
+    "05": "東京",
+    "06": "中山",
+    "07": "中京",
+    "08": "京都",
+    "09": "阪神",
+    "10": "小倉",
+}
+
+_YEAR_MONTH_CHECKDIGITS: dict[str, str] | None = None
 
 
 # ============================================================
@@ -420,8 +451,159 @@ def save_error(
 
 
 # ============================================================
-# 重賞レース一覧
+# JRA成績検索・開催日一覧
 # ============================================================
+
+def fetch_jra_search_page(cname: str) -> BeautifulSoup:
+    """JRAの開催日・レース検索ページをCNAMEで取得する。"""
+    response = SESSION.post(
+        JRA_DB_URL,
+        data={"cname": cname},
+        timeout=REQUEST_TIMEOUT,
+    )
+    response.raise_for_status()
+    response.encoding = "shift_jis"
+    time.sleep(REQUEST_INTERVAL)
+    return BeautifulSoup(response.text, "html.parser")
+
+
+def extract_cnames(soup: BeautifulSoup, prefix: str) -> list[str]:
+    """リンクやonclickに埋め込まれたJRAのCNAMEを取得する。"""
+    pattern = re.compile(rf"{re.escape(prefix)}[0-9A-Z/]+", re.IGNORECASE)
+    cnames = []
+    for element in soup.select("[href], [onclick]"):
+        for attribute in ("href", "onclick"):
+            value = element.get(attribute)
+            if value:
+                cnames.extend(pattern.findall(value))
+    return list(dict.fromkeys(cnames))
+
+
+def fetch_year_month_checkdigits() -> dict[str, str]:
+    """JRAの検索ページから年月別CNAMEチェック文字列を取得する。"""
+    soup = fetch_jra_search_page(JRA_CHECKDIGIT_CNAME)
+    html = str(soup)
+    checkdigits = dict(
+        re.findall(
+            r'objParam\["(\d{4})"\]\s*=\s*"([0-9A-Z]{1,2})"',
+            html,
+        )
+    )
+    if not checkdigits:
+        raise ValueError(
+            "JRA検索ページから年月別チェック文字列を取得できませんでした"
+        )
+    return checkdigits
+
+
+def year_month_checkdigits() -> dict[str, str]:
+    """年月別チェック文字列をプロセス内で一度だけ取得する。"""
+    global _YEAR_MONTH_CHECKDIGITS
+    if _YEAR_MONTH_CHECKDIGITS is None:
+        _YEAR_MONTH_CHECKDIGITS = fetch_year_month_checkdigits()
+    return _YEAR_MONTH_CHECKDIGITS
+
+
+def extract_cname_race_date(cname: str) -> str:
+    """開催日・レースCNAMEに含まれる日付をYYYY-MM-DDで返す。"""
+    match = RACE_DAY_DATE_PATTERN.search(cname)
+    if not match:
+        raise ValueError(f"CNAMEから開催日を取得できません: {cname}")
+    return datetime.strptime(
+        match.group("race_date"),
+        "%Y%m%d",
+    ).date().isoformat()
+
+
+def race_cname_details(cname: str) -> dict[str, int | str]:
+    """JRAのレース結果CNAMEから日付、競馬場、レース番号を取り出す。"""
+    match = RACE_CNAME_PATTERN.fullmatch(cname)
+    if not match:
+        raise ValueError(f"レース結果CNAMEの形式が不正です: {cname}")
+
+    venue_code = match.group("venue_code")
+    if venue_code not in JRA_VENUE_CODES:
+        raise ValueError(f"未対応のJRA競馬場コードです: {venue_code}")
+    race_date = datetime.strptime(
+        match.group("race_date"),
+        "%Y%m%d",
+    ).date()
+    return {
+        "race_date": race_date.isoformat(),
+        "venue": JRA_VENUE_CODES[venue_code],
+        "race_number": int(match.group("race_number")),
+    }
+
+
+def discover_race_days(
+    year: int,
+    month: int,
+    checkdigits: dict[str, str],
+    today=None,
+) -> list[str]:
+    """JRAの年月検索から、その月に開催された開催日CNAMEを取得する。"""
+    yymm = f"{year % 100:02d}{month:02d}"
+    checkdigit = checkdigits.get(yymm)
+    if not checkdigit:
+        raise ValueError(f"JRA検索のチェック文字列がありません: {yymm}")
+
+    month_cname = f"pw01skl10{year}{month:02d}/{checkdigit}"
+    soup = fetch_jra_search_page(month_cname)
+    race_days = []
+    current_date = today or datetime.now().date()
+    for cname in extract_cnames(soup, "pw01srl"):
+        race_date = datetime.strptime(
+            extract_cname_race_date(cname),
+            "%Y-%m-%d",
+        ).date()
+        if race_date.year == year and race_date.month == month and race_date <= current_date:
+            race_days.append(cname)
+    if not race_days:
+        raise RuntimeError(
+            f"{year}年{month}月の開催日リンクを取得できませんでした"
+        )
+    return race_days
+
+
+def discover_race_cnames_for_day(cname: str) -> list[str]:
+    """開催日ページから、その日の全レース結果CNAMEを取得する。"""
+    soup = fetch_jra_search_page(cname)
+    return extract_cnames(soup, "pw01sde")
+
+
+def race_result_url(cname: str) -> str:
+    """CNAMEからJRAのレース結果URLを作成する。"""
+    return f"{JRA_DB_URL}?CNAME={cname}"
+
+
+def race_result_already_saved(
+    conn: sqlite3.Connection,
+    cname: str,
+) -> bool:
+    """出走馬まで保存済みのレースを、再取得せずに判定する。"""
+    details = race_cname_details(cname)
+    columns = get_table_columns(conn, "races")
+    if "race_number" not in columns:
+        return False
+
+    row = conn.execute(
+        """
+        SELECT r.id, COUNT(h.id) AS horse_count
+        FROM races r
+        LEFT JOIN horses h ON h.race_id = r.id
+        WHERE r.race_date = ?
+          AND r.venue = ?
+          AND r.race_number = ?
+        GROUP BY r.id
+        """,
+        (
+            details["race_date"],
+            details["venue"],
+            details["race_number"],
+        ),
+    ).fetchone()
+    return bool(row and row["horse_count"] >= 5)
+
 
 def race_index_url(year: int) -> str:
     """
@@ -1220,6 +1402,48 @@ def save_race(
             (race["url"],),
         ).fetchone()
 
+        if not existing and race.get("race_number") is not None:
+            existing = conn.execute(
+                """
+                SELECT id
+                FROM races
+                WHERE race_date = ?
+                  AND venue = ?
+                  AND race_number = ?
+                ORDER BY id
+                LIMIT 1
+                """,
+                (
+                    race["race_date"],
+                    race["venue"],
+                    race["race_number"],
+                ),
+            ).fetchone()
+
+        if (
+            not existing
+            and "/JRADB/accessS.html?CNAME=" in race["url"]
+        ):
+            existing = conn.execute(
+                """
+                SELECT id
+                FROM races
+                WHERE race_date = ?
+                  AND venue = ?
+                  AND race_name = ?
+                  AND distance_m IS ?
+                  AND url LIKE '%/datafile/seiseki/replay/%'
+                ORDER BY id
+                LIMIT 1
+                """,
+                (
+                    race["race_date"],
+                    race["venue"],
+                    race["race_name"],
+                    race.get("distance_m"),
+                ),
+            ).fetchone()
+
         if existing:
             race_id = existing["id"]
 
@@ -1327,9 +1551,29 @@ def crawl_one_race(
     url: str,
 ) -> tuple[int, int, bool]:
     try:
-        soup = fetch_html(url)
+        parsed_url = urlparse(url)
+        cname = None
+        if parsed_url.path == "/JRADB/accessS.html":
+            cname = parse_qs(parsed_url.query).get("CNAME", [None])[0]
+
+        soup = (
+            fetch_jra_search_page(cname)
+            if cname
+            else fetch_html(url)
+        )
 
         race = extract_race_info(soup, url)
+        if cname:
+            details = race_cname_details(cname)
+            if race["race_date"] and race["race_date"] != details["race_date"]:
+                raise ValueError(
+                    "ページの日付とレースCNAMEの日付が一致しません: "
+                    f"{race['race_date']} != {details['race_date']}"
+                )
+            race["race_date"] = details["race_date"]
+            race["venue"] = details["venue"]
+            race["race_number"] = details["race_number"]
+
         horses = parse_horses(soup)
         payouts = parse_payouts(soup)
 
@@ -1364,71 +1608,129 @@ def main() -> int:
 
     total_ok = 0
     total_error = 0
+    total_skipped = 0
     total_horses = 0
     total_payouts = 0
 
     try:
         init_db(conn)
+        try:
+            checkdigits = year_month_checkdigits()
+        except Exception as exc:
+            print(f"[ERROR] JRA検索の年月情報 | {type(exc).__name__}: {exc}")
+            save_error(conn, JRA_DB_URL, exc)
+            checkdigits = {}
+            total_error += 1
 
-        for year in YEARS:
-            try:
-                urls = discover_race_urls(year)
+        today = datetime.now().date()
+        for year in (YEARS if checkdigits else []):
+            last_month = today.month if year == today.year else 12
+            for month in range(last_month, 0, -1):
+                yymm = f"{year % 100:02d}{month:02d}"
+                if yymm not in checkdigits:
+                    exc = ValueError(
+                        f"JRA検索のチェック文字列がありません: {yymm}"
+                    )
+                    print(f"[ERROR] {year}年{month}月 | {exc}")
+                    save_error(conn, JRA_DB_URL, exc)
+                    total_error += 1
+                    continue
 
-            except Exception as exc:
-                list_url = race_index_url(year)
+                try:
+                    race_days = discover_race_days(
+                        year,
+                        month,
+                        checkdigits,
+                        today=today,
+                    )
+                except Exception as exc:
+                    month_url = race_result_url(
+                        f"pw01skl10{year}{month:02d}/{checkdigits[yymm]}"
+                    )
+                    print(
+                        f"[ERROR] {year}年{month}月 | "
+                        f"{type(exc).__name__}: {exc}"
+                    )
+                    save_error(conn, month_url, exc)
+                    total_error += 1
+                    continue
 
                 print(
-                    f"[ERROR] {year}年 | "
-                    f"{type(exc).__name__}: {exc}"
+                    f"[SCAN] {year}年{month}月 | "
+                    f"開催日 {len(race_days)}件"
                 )
 
-                save_error(conn, list_url, exc)
-                total_error += 1
-                continue
+                for race_day_cname in reversed(race_days):
+                    try:
+                        race_cnames = discover_race_cnames_for_day(
+                            race_day_cname
+                        )
+                    except Exception as exc:
+                        day_url = race_result_url(race_day_cname)
+                        print(
+                            f"[ERROR] 開催日 {race_day_cname} | "
+                            f"{type(exc).__name__}: {exc}"
+                        )
+                        save_error(conn, day_url, exc)
+                        total_error += 1
+                        continue
 
-            if not urls:
-                exc = RuntimeError(
-                    "一覧ページから個別レースURLを取得できませんでした"
-                )
+                    if not race_cnames:
+                        exc = RuntimeError(
+                            "開催日ページからレース結果リンクを取得できませんでした"
+                        )
+                        print(f"[ERROR] 開催日 {race_day_cname} | {exc}")
+                        save_error(
+                            conn,
+                            race_result_url(race_day_cname),
+                            exc,
+                        )
+                        total_error += 1
+                        continue
 
-                print(f"[ERROR] {year}年 | {exc}")
+                    for cname in reversed(race_cnames):
+                        try:
+                            details = race_cname_details(cname)
+                            if details["race_date"] > today.isoformat():
+                                continue
+                            if race_result_already_saved(conn, cname):
+                                total_skipped += 1
+                                continue
+                        except Exception as exc:
+                            print(
+                                f"[ERROR] レースCNAME {cname} | "
+                                f"{type(exc).__name__}: {exc}"
+                            )
+                            save_error(conn, race_result_url(cname), exc)
+                            total_error += 1
+                            continue
 
-                save_error(
-                    conn,
-                    race_index_url(year),
-                    exc,
-                )
+                        horse_count, payout_count, success = crawl_one_race(
+                            conn,
+                            race_result_url(cname),
+                        )
 
-                total_error += 1
-                continue
+                        if success:
+                            total_ok += 1
+                            total_horses += horse_count
+                            total_payouts += payout_count
+                        else:
+                            total_error += 1
 
-            for url in urls:
-                horse_count, payout_count, success = crawl_one_race(
-                    conn,
-                    url,
-                )
-
-                if success:
-                    total_ok += 1
-                    total_horses += horse_count
-                    total_payouts += payout_count
-                else:
-                    total_error += 1
-
-                time.sleep(REQUEST_INTERVAL)
 
     finally:
         conn.close()
         SESSION.close()
 
     print(
-        f"[DONE] 成功 {total_ok}レース "
+        f"[DONE] 新規・更新 {total_ok}レース "
+        f"| 保存済みスキップ {total_skipped}レース "
         f"| 失敗 {total_error}件 "
         f"| 馬 {total_horses}件 "
         f"| 払戻 {total_payouts}件"
     )
 
-    return 1 if total_ok == 0 or total_error > 0 else 0
+    return 1 if total_error > 0 else 0
 
 
 if __name__ == "__main__":
