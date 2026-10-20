@@ -4,84 +4,97 @@
   "definition": "At least one horse with popularity rank >= 7 finishes in positions 1, 2, or 3",
   "popularity_threshold": 7,
   "split": {
-    "train": "2002-01-01 to 2022-12-31",
-    "validation": "2023-01-01 to 2024-12-31",
-    "test": "2025-01-01 onward"
+    "strategy": "chronological_date_proportions",
+    "train": "2024-01-06 to 2025-12-20",
+    "validation": "2025-12-21 to 2026-05-23",
+    "test": "2026-05-24 onward",
+    "counts": {
+      "train": 6754,
+      "validation": 1447,
+      "test": 1421
+    }
   },
   "counts": {
-    "all_labeled_races": 2268,
-    "train_races": 1835,
-    "validation_races": 225,
-    "test_races": 208
+    "all_labeled_races": 9622,
+    "train_races": 6754,
+    "validation_races": 1447,
+    "test_races": 1421
   },
   "deployment_model_trained_through": "2026-10-18",
   "class_rates": {
-    "train_upset_rate": 0.6065395095367847,
-    "validation_upset_rate": 0.5733333333333334,
-    "test_upset_rate": 0.625
+    "train_upset_rate": 0.4875629256736749,
+    "validation_upset_rate": 0.4879060124395301,
+    "test_upset_rate": 0.4933145672061928
   },
   "validation": {
-    "n_races": 225,
-    "actual_upset_rate": 0.5733333333333334,
+    "n_races": 1447,
+    "actual_upset_rate": 0.4879060124395301,
     "classification_threshold": 0.5,
-    "predicted_upset_rate": 0.6711111111111111,
-    "accuracy": 0.6177777777777778,
-    "balanced_accuracy": 0.594718992248062,
-    "precision": 0.6423841059602649,
-    "recall": 0.751937984496124,
-    "brier_score": 0.2423047935216064,
-    "log_loss": 0.6817064378469713,
+    "predicted_upset_rate": 0.5355908776779544,
+    "accuracy": 0.5957152729785764,
+    "balanced_accuracy": 0.5966326799784382,
+    "precision": 0.5780645161290323,
+    "recall": 0.6345609065155807,
+    "brier_score": 0.23854404257778675,
+    "log_loss": 0.6728968486276168,
     "confusion_matrix_labels_0_1": [
       [
-        42,
-        54
+        414,
+        327
       ],
       [
-        32,
-        97
+        258,
+        448
       ]
     ],
-    "roc_auc": 0.6127260981912145,
-    "pr_auc": 0.6652263846413164,
-    "top_10pct_upset_rate": 0.6956521739130435,
-    "bottom_10pct_upset_rate": 0.30434782608695654
+    "roc_auc": 0.6439655469027766,
+    "pr_auc": 0.6201204557033866,
+    "top_10pct_upset_rate": 0.6827586206896552,
+    "bottom_10pct_upset_rate": 0.2827586206896552
   },
   "test": {
-    "n_races": 208,
-    "actual_upset_rate": 0.625,
-    "classification_threshold": 0.4091925591391443,
-    "predicted_upset_rate": 0.7307692307692307,
-    "accuracy": 0.7211538461538461,
-    "balanced_accuracy": 0.6743589743589744,
-    "precision": 0.7368421052631579,
-    "recall": 0.8615384615384616,
-    "brier_score": 0.20163029917770753,
-    "log_loss": 0.5918536968083408,
+    "n_races": 1421,
+    "actual_upset_rate": 0.4933145672061928,
+    "classification_threshold": 0.4595559774059569,
+    "predicted_upset_rate": 0.5263898662913441,
+    "accuracy": 0.5770584095707249,
+    "balanced_accuracy": 0.5774251069900143,
+    "precision": 0.5668449197860963,
+    "recall": 0.6048502139800286,
+    "brier_score": 0.239863983945314,
+    "log_loss": 0.6716321826906778,
     "confusion_matrix_labels_0_1": [
       [
-        38,
-        40
+        396,
+        324
       ],
       [
-        18,
-        112
+        277,
+        424
       ]
     ],
-    "roc_auc": 0.7366863905325445,
-    "pr_auc": 0.7918575084862125,
-    "top_10pct_upset_rate": 0.9047619047619048,
-    "bottom_10pct_upset_rate": 0.23809523809523808
+    "roc_auc": 0.6369531621493104,
+    "pr_auc": 0.6022441997549353,
+    "top_10pct_upset_rate": 0.7062937062937062,
+    "bottom_10pct_upset_rate": 0.13986013986013987
   },
-  "classification_threshold_selected_on_validation": 0.4091925591391443,
+  "classification_threshold_selected_on_validation": 0.4595559774059569,
   "categorical_features": [
     "venue",
     "surface",
     "direction",
     "race_name",
-    "distance_band"
+    "distance_band",
+    "weather",
+    "turf_condition",
+    "dirt_condition",
+    "race_grade",
+    "race_conditions"
   ],
   "numeric_features": [
     "distance_m",
+    "race_number",
+    "start_minutes",
     "field_size",
     "field_frame_mean",
     "field_frame_std",
@@ -150,7 +163,14 @@
     "direction",
     "race_name",
     "distance_band",
+    "weather",
+    "turf_condition",
+    "dirt_condition",
+    "race_grade",
+    "race_conditions",
     "distance_m",
+    "race_number",
+    "start_minutes",
     "field_size",
     "field_frame_mean",
     "field_frame_std",

@@ -2,19 +2,26 @@
   "model": "HistGradientBoostingClassifier",
   "target": "finish <= 3",
   "sklearn_version": "1.9.1",
-  "test_horses": 4939,
-  "test_races": 349,
-  "test_start_date": "2023-09-18",
+  "test_horses": 18825,
+  "test_races": 1421,
+  "test_start_date": "2026-05-24",
   "test_end_date": "2026-10-18",
   "features": [
     "venue",
     "surface",
     "direction",
     "race_name",
+    "weather",
+    "turf_condition",
+    "dirt_condition",
+    "race_grade",
+    "race_conditions",
     "sex",
     "jockey",
     "trainer",
     "distance_m",
+    "race_number",
+    "start_minutes",
     "frame",
     "horse_number",
     "age",
@@ -32,74 +39,94 @@
     "trainer_prior_win_rate",
     "trainer_prior_top3_rate"
   ],
-  "positive_rate_test": 0.21198623203077546,
-  "accuracy_at_0_5": 0.8027940878720389,
-  "precision_at_0_5": 0.5883777239709443,
-  "recall_at_0_5": 0.23209169054441262,
+  "positive_rate_test": 0.22645418326693226,
+  "accuracy_at_0_5": 0.8019123505976096,
+  "precision_at_0_5": 0.6161879895561357,
+  "recall_at_0_5": 0.3321604503870514,
   "classification_report_at_0_5": {
     "4着以下": {
-      "precision": 0.8223596995139196,
-      "recall": 0.9563206577595067,
-      "f1-score": 0.8842955571394631,
-      "support": 3892.0
+      "precision": 0.8277364312942458,
+      "recall": 0.9394313967861557,
+      "f1-score": 0.880054038405867,
+      "support": 14562.0
     },
     "3着以内": {
-      "precision": 0.5883777239709443,
-      "recall": 0.23209169054441262,
-      "f1-score": 0.33287671232876714,
-      "support": 1047.0
+      "precision": 0.6161879895561357,
+      "recall": 0.3321604503870514,
+      "f1-score": 0.43164151806127116,
+      "support": 4263.0
     },
-    "accuracy": 0.8027940878720389,
+    "accuracy": 0.8019123505976096,
     "macro avg": {
-      "precision": 0.705368711742432,
-      "recall": 0.5942061741519596,
-      "f1-score": 0.608586134734115,
-      "support": 4939.0
+      "precision": 0.7219622104251908,
+      "recall": 0.6357959235866035,
+      "f1-score": 0.6558477782335691,
+      "support": 18825.0
     },
     "weighted avg": {
-      "precision": 0.7727587421554473,
-      "recall": 0.8027940878720389,
-      "f1-score": 0.7674023539572807,
-      "support": 4939.0
+      "precision": 0.7798304016990498,
+      "recall": 0.8019123505976096,
+      "f1-score": 0.7785091473445649,
+      "support": 18825.0
     }
   },
-  "roc_auc": 0.7633555865090981,
-  "average_precision": 0.46825889283044736,
+  "roc_auc": 0.802313777004297,
+  "average_precision": 0.5333973493868798,
   "race_level_top3": {
-    "races": 349,
-    "mean_correct_picks": 1.4641833810888252,
-    "precision_at_3": 0.4880611270296084,
-    "recall_at_3": 0.4880611270296084,
-    "race_with_any_top3_hit_rate": 0.8853868194842407,
-    "winner_hit_rate": 0.5988538681948424,
-    "exact_top3_set_rate": 0.07449856733524356
+    "races": 1421,
+    "excluded_races": 0,
+    "mean_correct_picks": 1.5869106263194934,
+    "precision_at_3": 0.5289702087731645,
+    "recall_at_3": 0.5289702087731645,
+    "race_with_any_top3_hit_rate": 0.9310344827586207,
+    "winner_hit_rate": 0.669247009148487,
+    "exact_top3_set_rate": 0.09148486980999296
+  },
+  "race_level_top3_on_market_coverage": {
+    "races": 1358,
+    "excluded_races": 0,
+    "mean_correct_picks": 1.5795287187039764,
+    "precision_at_3": 0.5265095729013255,
+    "recall_at_3": 0.5265095729013255,
+    "race_with_any_top3_hit_rate": 0.9293078055964654,
+    "winner_hit_rate": 0.6642120765832106,
+    "exact_top3_set_rate": 0.08910162002945508
   },
   "popularity_baseline": {
-    "races": 349,
-    "mean_correct_picks": 1.4240687679083095,
-    "precision_at_3": 0.47468958930276983,
-    "recall_at_3": 0.47468958930276983,
-    "race_with_any_top3_hit_rate": 0.8825214899713467,
-    "winner_hit_rate": 0.5873925501432665,
-    "exact_top3_set_rate": 0.0659025787965616
+    "races": 1358,
+    "excluded_races": 0,
+    "mean_correct_picks": 1.5832106038291605,
+    "precision_at_3": 0.5277368679430535,
+    "recall_at_3": 0.5277368679430535,
+    "race_with_any_top3_hit_rate": 0.9300441826215022,
+    "winner_hit_rate": 0.666421207658321,
+    "exact_top3_set_rate": 0.0898379970544919,
+    "excluded_incomplete_market_races": 63
   },
   "validation": {
     "model": "HistGradientBoostingClassifier",
     "target": "finish <= 3",
     "sklearn_version": "1.9.1",
-    "test_horses": 4889,
-    "test_races": 341,
-    "test_start_date": "2020-09-13",
-    "test_end_date": "2023-09-17",
+    "test_horses": 20464,
+    "test_races": 1447,
+    "test_start_date": "2025-12-21",
+    "test_end_date": "2026-05-23",
     "features": [
       "venue",
       "surface",
       "direction",
       "race_name",
+      "weather",
+      "turf_condition",
+      "dirt_condition",
+      "race_grade",
+      "race_conditions",
       "sex",
       "jockey",
       "trainer",
       "distance_m",
+      "race_number",
+      "start_minutes",
       "frame",
       "horse_number",
       "age",
@@ -117,63 +144,76 @@
       "trainer_prior_win_rate",
       "trainer_prior_top3_rate"
     ],
-    "positive_rate_test": 0.20924524442626305,
-    "accuracy_at_0_5": 0.8017999590918389,
-    "precision_at_0_5": 0.5675,
-    "recall_at_0_5": 0.22189638318670576,
+    "positive_rate_test": 0.21212861610633307,
+    "accuracy_at_0_5": 0.8200254104769351,
+    "precision_at_0_5": 0.6404782237403929,
+    "recall_at_0_5": 0.3455425017277125,
     "classification_report_at_0_5": {
       "4着以下": {
-        "precision": 0.8226776564936511,
-        "recall": 0.9552509053285049,
-        "f1-score": 0.8840215439856374,
-        "support": 3866.0
+        "precision": 0.8432292241474451,
+        "recall": 0.9477764683991813,
+        "f1-score": 0.8924514527668272,
+        "support": 16123.0
       },
       "3着以内": {
-        "precision": 0.5675,
-        "recall": 0.22189638318670576,
-        "f1-score": 0.3190442726633872,
-        "support": 1023.0
+        "precision": 0.6404782237403929,
+        "recall": 0.3455425017277125,
+        "f1-score": 0.4489001945234176,
+        "support": 4341.0
       },
-      "accuracy": 0.8017999590918389,
+      "accuracy": 0.8200254104769351,
       "macro avg": {
-        "precision": 0.6950888282468255,
-        "recall": 0.5885736442576053,
-        "f1-score": 0.6015329083245122,
-        "support": 4889.0
+        "precision": 0.7418537239439189,
+        "recall": 0.6466594850634468,
+        "f1-score": 0.6706758236451225,
+        "support": 20464.0
       },
       "weighted avg": {
-        "precision": 0.769282945388516,
-        "recall": 0.8017999590918389,
-        "f1-score": 0.76580273675253,
-        "support": 4889.0
+        "precision": 0.8002199350169225,
+        "recall": 0.8200254104769351,
+        "f1-score": 0.79836153818343,
+        "support": 20464.0
       }
     },
-    "roc_auc": 0.7729471255788363,
-    "average_precision": 0.45453734991674877,
+    "roc_auc": 0.8216240439001357,
+    "average_precision": 0.5474442774342941,
     "race_level_top3": {
-      "races": 341,
-      "mean_correct_picks": 1.434017595307918,
-      "precision_at_3": 0.4780058651026393,
-      "recall_at_3": 0.4780058651026393,
-      "race_with_any_top3_hit_rate": 0.9090909090909091,
-      "winner_hit_rate": 0.5865102639296188,
-      "exact_top3_set_rate": 0.06451612903225806
+      "races": 1447,
+      "excluded_races": 0,
+      "mean_correct_picks": 1.6192121630960608,
+      "precision_at_3": 0.539737387698687,
+      "recall_at_3": 0.539737387698687,
+      "race_with_any_top3_hit_rate": 0.944713199723566,
+      "winner_hit_rate": 0.6434001382170007,
+      "exact_top3_set_rate": 0.10020732550103663
+    },
+    "race_level_top3_on_market_coverage": {
+      "races": 1377,
+      "excluded_races": 0,
+      "mean_correct_picks": 1.6143790849673203,
+      "precision_at_3": 0.5381263616557734,
+      "recall_at_3": 0.5381263616557734,
+      "race_with_any_top3_hit_rate": 0.9448075526506899,
+      "winner_hit_rate": 0.6427015250544662,
+      "exact_top3_set_rate": 0.09658678286129267
     },
     "popularity_baseline": {
-      "races": 341,
-      "mean_correct_picks": 1.4516129032258065,
-      "precision_at_3": 0.4838709677419355,
-      "recall_at_3": 0.4838709677419355,
-      "race_with_any_top3_hit_rate": 0.906158357771261,
-      "winner_hit_rate": 0.5777126099706745,
-      "exact_top3_set_rate": 0.06451612903225806
+      "races": 1377,
+      "excluded_races": 0,
+      "mean_correct_picks": 1.6158315177923022,
+      "precision_at_3": 0.5386105059307673,
+      "recall_at_3": 0.5386105059307673,
+      "race_with_any_top3_hit_rate": 0.944081336238199,
+      "winner_hit_rate": 0.6456063907044299,
+      "exact_top3_set_rate": 0.09803921568627451,
+      "excluded_incomplete_market_races": 70
     }
   },
   "split": {
-    "train_end": "2020-09-12",
-    "validation_start": "2020-09-13",
-    "validation_end": "2023-09-17",
-    "test_start": "2023-09-18"
+    "train_end": "2025-12-20",
+    "validation_start": "2025-12-21",
+    "validation_end": "2026-05-23",
+    "test_start": "2026-05-24"
   },
   "deployment_model_trained_through": "2026-10-18"
 }

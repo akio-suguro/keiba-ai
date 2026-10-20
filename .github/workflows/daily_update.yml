@@ -15,7 +15,7 @@ concurrency:
 jobs:
   update:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 45
 
     steps:
       - name: Checkout repository
@@ -31,14 +31,14 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Update data and predictions
-        run: python scripts/update_daily.py
+      - name: Crawl current-month race results
+        run: python scripts/crawl_jra.py --current-month-only
 
-      - name: Save updated database and predictions
+      - name: Save updated database
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add data/keiba.db data/predictions/
+          git add data/keiba.db
           if ! git diff --cached --quiet; then
             git commit -m "Update racing data and predictions"
             git push

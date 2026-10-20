@@ -488,6 +488,74 @@ def add_race_features(
     return race_frame, categorical, numeric
 
 
+def chronological_split(
+    data: pd.DataFrame,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, dict[str, str]]:
+    """Use configured date ranges, falling back to date-based proportions."""
+    date_key = data["race_date"].dt.normalize()
+    train_mask = date_key.between(
+        pd.Timestamp(TRAIN_START),
+        pd.Timestamp(TRAIN_END),
+    )
+    valid_mask = date_key.between(
+        pd.Timestamp(VALID_START),
+        pd.Timestamp(VALID_END),
+    )
+    test_mask = date_key.ge(pd.Timestamp(TEST_START))
+
+    train = data.loc[train_mask].copy()
+    valid = data.loc[valid_mask].copy()
+    test = data.loc[test_mask].copy()
+    if not train.empty and not valid.empty and not test.empty:
+        return (
+            train,
+            valid,
+            test,
+            {
+                "strategy": "configured_date_ranges",
+                "train": f"{TRAIN_START} to {TRAIN_END}",
+                "validation": f"{VALID_START} to {VALID_END}",
+                "test": f"{TEST_START} onward",
+            },
+        )
+
+    dates = pd.DatetimeIndex(date_key.dropna().unique()).sort_values()
+    if len(dates) < 3:
+        raise ValueError(
+            "時系列の学習・検証・テストには"
+            "異なる開催日が3日以上必要です。"
+        )
+
+    train_end_index = max(1, min(int(len(dates) * 0.70), len(dates) - 2))
+    validation_end_index = max(
+        train_end_index + 1,
+        min(int(len(dates) * 0.85), len(dates) - 1),
+    )
+    validation_start = dates[train_end_index]
+    test_start = dates[validation_end_index]
+
+    train_mask = date_key < validation_start
+    valid_mask = (date_key >= validation_start) & (date_key < test_start)
+    test_mask = date_key >= test_start
+    train = data.loc[train_mask].copy()
+    valid = data.loc[valid_mask].copy()
+    test = data.loc[test_mask].copy()
+
+    split = {
+        "strategy": "chronological_date_proportions",
+        "train": (
+            f"{date_key.loc[train_mask].min().date()} to "
+            f"{date_key.loc[train_mask].max().date()}"
+        ),
+        "validation": (
+            f"{date_key.loc[valid_mask].min().date()} to "
+            f"{date_key.loc[valid_mask].max().date()}"
+        ),
+        "test": f"{test_start.date()} onward",
+    }
+    return train, valid, test, split
+
+
 # ============================================================
 # モデル構築
 # ============================================================
@@ -718,33 +786,7 @@ def main() -> None:
     target = "target_race_upset"
     feature_cols = categorical + numeric
 
-    # 時系列で分割する。未来のレースを学習に混ぜない。
-    train_mask = data["race_date"].between(
-        pd.Timestamp(TRAIN_START),
-        pd.Timestamp(TRAIN_END),
-    )
-
-    valid_mask = data["race_date"].between(
-        pd.Timestamp(VALID_START),
-        pd.Timestamp(VALID_END),
-    )
-
-    test_mask = data["race_date"].ge(
-        pd.Timestamp(TEST_START)
-    )
-
-    train = data.loc[train_mask].copy()
-    valid = data.loc[valid_mask].copy()
-    test = data.loc[test_mask].copy()
-
-    if train.empty or valid.empty or test.empty:
-        raise ValueError(
-            "学習・検証・テストのいずれかが空です。\n"
-            f"train={len(train)}, "
-            f"validation={len(valid)}, "
-            f"test={len(test)}\n"
-            "race_date の収録範囲を確認してください。"
-        )
+    train, valid, test, split = chronological_split(data)
 
     if train[target].nunique() < 2:
         raise ValueError(
@@ -753,16 +795,17 @@ def main() -> None:
         )
 
     print("\n=== データ分割 ===")
+    print(f"分割方式: {split['strategy']}")
     print(
-        f"学習: {TRAIN_START} ～ {TRAIN_END} "
+        f"学習: {split['train']} "
         f"({len(train)}レース)"
     )
     print(
-        f"検証: {VALID_START} ～ {VALID_END} "
+        f"検証: {split['validation']} "
         f"({len(valid)}レース)"
     )
     print(
-        f"テスト: {TEST_START} 以降 "
+        f"テスト: {split['test']} "
         f"({len(test)}レース)"
     )
 
@@ -817,9 +860,12 @@ def main() -> None:
         ),
         "popularity_threshold": UPSET_POPULARITY_THRESHOLD,
         "split": {
-            "train": f"{TRAIN_START} to {TRAIN_END}",
-            "validation": f"{VALID_START} to {VALID_END}",
-            "test": f"{TEST_START} onward",
+            **split,
+            "counts": {
+                "train": int(len(train)),
+                "validation": int(len(valid)),
+                "test": int(len(test)),
+            },
         },
         "counts": {
             "all_labeled_races": int(len(data)),

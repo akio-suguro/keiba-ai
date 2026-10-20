@@ -67,6 +67,11 @@ HEADERS = {
 SESSION = requests.Session()
 SESSION.headers.update(HEADERS)
 
+
+class JraParameterError(RuntimeError):
+    """JRA returned a parameter-error page for a search request."""
+
+
 BET_TYPES = {
     "単勝",
     "複勝",
@@ -115,6 +120,7 @@ JRA_VENUE_CODES = {
 }
 
 _YEAR_MONTH_CHECKDIGITS: dict[str, str] | None = None
+_YEAR_INDEX_RACE_DAY_CNAMES: list[str] | None = None
 
 
 # ============================================================
@@ -477,7 +483,13 @@ def fetch_jra_search_page(cname: str) -> BeautifulSoup:
     response.raise_for_status()
     response.encoding = "shift_jis"
     time.sleep(REQUEST_INTERVAL)
-    return BeautifulSoup(response.text, "html.parser")
+    soup = BeautifulSoup(response.text, "html.parser")
+    title = soup.title.get_text(" ", strip=True) if soup.title else ""
+    if "パラメータエラー" in title:
+        raise JraParameterError(
+            f"JRA検索がパラメータエラーを返しました: {cname}"
+        )
+    return soup
 
 
 def extract_cnames(soup: BeautifulSoup, prefix: str) -> list[str]:
@@ -494,7 +506,9 @@ def extract_cnames(soup: BeautifulSoup, prefix: str) -> list[str]:
 
 def fetch_year_month_checkdigits() -> dict[str, str]:
     """JRAの検索ページから年月別CNAMEチェック文字列を取得する。"""
+    global _YEAR_INDEX_RACE_DAY_CNAMES
     soup = fetch_jra_search_page(JRA_CHECKDIGIT_CNAME)
+    _YEAR_INDEX_RACE_DAY_CNAMES = extract_cnames(soup, "pw01srl")
     html = str(soup)
     checkdigits = dict(
         re.findall(
@@ -561,9 +575,31 @@ def discover_race_days(
         raise ValueError(f"JRA検索のチェック文字列がありません: {yymm}")
 
     month_cname = f"pw01skl10{year}{month:02d}/{checkdigit}"
-    soup = fetch_jra_search_page(month_cname)
-    race_days = []
     current_date = today or datetime.now().date()
+    try:
+        soup = fetch_jra_search_page(month_cname)
+    except JraParameterError:
+        if year != current_date.year or month != current_date.month:
+            raise
+        index_cnames = _YEAR_INDEX_RACE_DAY_CNAMES
+        if index_cnames is None:
+            index_soup = fetch_jra_search_page(JRA_CHECKDIGIT_CNAME)
+            index_cnames = extract_cnames(index_soup, "pw01srl")
+        race_days = []
+        for cname in index_cnames:
+            race_date = datetime.strptime(
+                extract_cname_race_date(cname),
+                "%Y-%m-%d",
+            ).date()
+            if (
+                race_date.year == year
+                and race_date.month == month
+                and race_date <= current_date
+            ):
+                race_days.append(cname)
+        return race_days
+
+    race_days = []
     for cname in extract_cnames(soup, "pw01srl"):
         race_date = datetime.strptime(
             extract_cname_race_date(cname),
@@ -1624,7 +1660,7 @@ def crawl_one_race(
 # メイン
 # ============================================================
 
-def main() -> int:
+def main(*, current_month_only: bool = False) -> int:
     conn = connect_db()
 
     total_ok = 0
@@ -1654,11 +1690,17 @@ def main() -> int:
                 total_error += 1
 
         today = datetime.now().date()
-        for year in (YEARS if checkdigits else []):
+        years = [today.year] if current_month_only else YEARS
+        for year in (years if checkdigits else []):
             if size_limit_reached:
                 break
             last_month = today.month if year == today.year else 12
-            for month in range(last_month, 0, -1):
+            months = (
+                [today.month]
+                if current_month_only
+                else range(last_month, 0, -1)
+            )
+            for month in months:
                 if size_limit_reached:
                     break
                 yymm = f"{year % 100:02d}{month:02d}"
@@ -1685,6 +1727,16 @@ def main() -> int:
                         today=today,
                     )
                 except Exception as exc:
+                    if (
+                        year == today.year
+                        and month == today.month
+                        and isinstance(exc, JraParameterError)
+                    ):
+                        print(
+                            f"[WAIT] {year}年{month}月のJRA検索情報は"
+                            f"まだ利用できません: {exc}"
+                        )
+                        continue
                     month_url = race_result_url(
                         f"pw01skl10{year}{month:02d}/{checkdigits[yymm]}"
                     )
@@ -1802,4 +1854,13 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    import argparse
+
+    parser = argparse.ArgumentParser(description="JRA race-results crawler")
+    parser.add_argument(
+        "--current-month-only",
+        action="store_true",
+        help="crawl completed races in the current month only",
+    )
+    args = parser.parse_args()
+    sys.exit(main(current_month_only=args.current_month_only))

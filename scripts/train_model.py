@@ -371,7 +371,20 @@ def _top_three_metrics(
     score_column: str,
 ) -> dict[str, float | int]:
     race_results = []
+    excluded_races = 0
     for _, group in frame.groupby("race_id", sort=False):
+        finish = pd.to_numeric(group["finish"], errors="coerce")
+        placed = finish.isin([1, 2, 3])
+        if (
+            group["horse_number"].isna().any()
+            or not finish.eq(1).sum() == 1
+            or not finish.eq(2).sum() == 1
+            or not finish.eq(3).sum() == 1
+            or int(placed.sum()) != 3
+        ):
+            excluded_races += 1
+            continue
+
         predicted = set(
             group.sort_values(
                 [score_column, "horse_number"],
@@ -380,22 +393,26 @@ def _top_three_metrics(
             )
             .head(3)["horse_number"]
         )
-        actual = set(group.loc[group["finish"].le(3), "horse_number"])
+        actual = set(group.loc[placed, "horse_number"])
         hits = len(predicted & actual)
         race_results.append(
             {
                 "hits": hits,
                 "winner_hit": int(
-                    group.loc[group["finish"].eq(1), "horse_number"].iloc[0]
+                    group.loc[finish.eq(1), "horse_number"].iloc[0]
                     in predicted
                 ),
                 "exact_top3": int(predicted == actual),
             }
         )
 
+    if not race_results:
+        raise ValueError("上位3頭を評価できる有効なレースがありません。")
+
     results = pd.DataFrame(race_results)
     return {
         "races": int(len(results)),
+        "excluded_races": excluded_races,
         "mean_correct_picks": float(results["hits"].mean()),
         "precision_at_3": float(results["hits"].sum() / (3 * len(results))),
         "recall_at_3": float(results["hits"].sum() / (3 * len(results))),
@@ -509,19 +526,35 @@ def evaluate_model(
             market["popularity"],
             errors="coerce",
         )
-        market = market.dropna(subset=["popularity"])
-        complete_market_races = market.groupby("race_id").filter(
+        complete_market_races = market.groupby(
+            "race_id",
+            sort=False,
+        ).filter(
             lambda group: group["popularity"].notna().all()
             and group["popularity"].is_unique
         )
         if not complete_market_races.empty:
+            market_race_ids = complete_market_races["race_id"].unique()
             complete_market_races["_market_score"] = (
                 -complete_market_races["popularity"]
             )
-            metrics["popularity_baseline"] = _top_three_metrics(
+            metrics["race_level_top3_on_market_coverage"] = (
+                _top_three_metrics(
+                    predictions_df[
+                        predictions_df["race_id"].isin(market_race_ids)
+                    ],
+                    "ranking_score",
+                )
+            )
+            popularity_metrics = _top_three_metrics(
                 complete_market_races,
                 "_market_score",
             )
+            popularity_metrics["excluded_incomplete_market_races"] = int(
+                test_df["race_id"].nunique()
+                - complete_market_races["race_id"].nunique()
+            )
+            metrics["popularity_baseline"] = popularity_metrics
 
     return metrics, predictions_df
 
@@ -635,6 +668,14 @@ def main():
         )
     )
     if "popularity_baseline" in metrics:
+        print("\n===== 市場人気が揃ったレースでのモデル評価 =====")
+        print(
+            json.dumps(
+                metrics["race_level_top3_on_market_coverage"],
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
         print("\n===== 人気順ベースライン =====")
         print(
             json.dumps(

@@ -1,9 +1,9 @@
 import sqlite3
 import tempfile
 import unittest
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
-from unittest.mock import ANY, patch
+from unittest.mock import ANY, Mock, patch
 
 from bs4 import BeautifulSoup
 
@@ -71,6 +71,65 @@ class RaceIndexUrlTests(unittest.TestCase):
 
 
 class JraSearchTests(unittest.TestCase):
+    def test_rejects_jra_parameter_error_page(self):
+        response = Mock()
+        response.text = "<html><title>パラメータエラー JRA</title></html>"
+        with (
+            patch.object(crawl_jra.SESSION, "post", return_value=response),
+            patch.object(crawl_jra.time, "sleep"),
+        ):
+            with self.assertRaisesRegex(
+                crawl_jra.JraParameterError,
+                "パラメータエラー",
+            ):
+                crawl_jra.fetch_jra_search_page("pw01skl10202610/C3")
+
+    def test_current_month_parameter_error_falls_back_to_year_index(self):
+        today = date.today()
+        current_day_cname = (
+            f"pw01srl1005{today.year}0401{today:%Y%m%d}/8F"
+        )
+        previous_month = date(today.year, today.month, 1) - timedelta(days=1)
+        old_month_cname = (
+            f"pw01srl1005{previous_month.year}0401"
+            f"{previous_month:%Y%m%d}/FA"
+        )
+        future_date = today + timedelta(days=1)
+        future_day_cnames = (
+            [
+                f"pw01srl1005{today.year}0402{future_date:%Y%m%d}/AA"
+            ]
+            if future_date.month == today.month
+            else []
+        )
+        with (
+            patch.object(
+                crawl_jra,
+                "_YEAR_INDEX_RACE_DAY_CNAMES",
+                [
+                    current_day_cname,
+                    old_month_cname,
+                    *future_day_cnames,
+                ],
+            ),
+            patch.object(
+                crawl_jra,
+                "fetch_jra_search_page",
+                side_effect=crawl_jra.JraParameterError("not published"),
+            ) as fetch_page,
+        ):
+            race_days = crawl_jra.discover_race_days(
+                today.year,
+                today.month,
+                {f"{today.year % 100:02d}{today.month:02d}": "C3"},
+                today=today,
+            )
+
+        fetch_page.assert_called_once_with(
+            f"pw01skl10{today.year}{today.month:02d}/C3"
+        )
+        self.assertEqual(race_days, [current_day_cname])
+
     def test_extracts_cnames_from_onclick_and_deduplicates(self):
         soup = BeautifulSoup(
             """
@@ -397,6 +456,41 @@ class MainCrawlerTests(unittest.TestCase):
         self.assertEqual(result, 0)
         self.assertEqual(scanned_months, expected_newest_months)
 
+    def test_main_can_limit_crawl_to_current_month(self):
+        today = date.today()
+        scanned_months = []
+
+        def record_month(year, month, *_args, **_kwargs):
+            scanned_months.append((year, month))
+            return []
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with (
+                patch.object(
+                    crawl_jra,
+                    "DB_PATH",
+                    Path(temp_dir) / "test.sqlite",
+                ),
+                patch.object(crawl_jra, "YEARS", [today.year, today.year - 1]),
+                patch.object(
+                    crawl_jra,
+                    "year_month_checkdigits",
+                    return_value={
+                        f"{today.year % 100:02d}{today.month:02d}": "3F"
+                    },
+                ),
+                patch.object(
+                    crawl_jra,
+                    "discover_race_days",
+                    side_effect=record_month,
+                ),
+                patch.object(crawl_jra.SESSION, "close"),
+            ):
+                result = crawl_jra.main(current_month_only=True)
+
+        self.assertEqual(result, 0)
+        self.assertEqual(scanned_months, [(today.year, today.month)])
+
     def test_main_stops_without_crawling_when_database_is_at_size_limit(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             with (
@@ -418,6 +512,49 @@ class MainCrawlerTests(unittest.TestCase):
 
         self.assertEqual(result, 0)
         checkdigits.assert_not_called()
+
+    def test_main_treats_current_month_parameter_error_as_waiting(self):
+        today = date.today()
+        checkdigits = {
+            f"{today.year % 100:02d}{month:02d}": "3F"
+            for month in range(1, today.month + 1)
+        }
+
+        def discover_month(year, month, *_args, **_kwargs):
+            if year == today.year and month == today.month:
+                raise crawl_jra.JraParameterError("JRA parameter error")
+            return []
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with (
+                patch.object(
+                    crawl_jra,
+                    "DB_PATH",
+                    Path(temp_dir) / "test.sqlite",
+                ),
+                patch.object(crawl_jra, "YEARS", [today.year]),
+                patch.object(
+                    crawl_jra,
+                    "year_month_checkdigits",
+                    return_value=checkdigits,
+                ),
+                patch.object(
+                    crawl_jra,
+                    "discover_race_days",
+                    side_effect=discover_month,
+                ) as discover_race_days,
+                patch.object(crawl_jra.SESSION, "close"),
+            ):
+                result = crawl_jra.main()
+
+            with sqlite3.connect(Path(temp_dir) / "test.sqlite") as conn:
+                error_count = conn.execute(
+                    "SELECT COUNT(*) FROM crawl_errors"
+                ).fetchone()[0]
+
+        self.assertEqual(result, 0)
+        self.assertEqual(discover_race_days.call_count, today.month)
+        self.assertEqual(error_count, 0)
 
     def test_main_stops_after_a_race_reaches_database_size_limit(self):
         year = date.today().year - 1

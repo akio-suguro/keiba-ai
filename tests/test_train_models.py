@@ -233,6 +233,59 @@ class TopThreeModelTests(unittest.TestCase):
         self.assertEqual(metrics["mean_correct_picks"], 3)
         self.assertEqual(metrics["winner_hit_rate"], 1)
         self.assertEqual(metrics["exact_top3_set_rate"], 1)
+        self.assertEqual(metrics["excluded_races"], 0)
+
+    def test_top_three_metrics_excludes_races_without_complete_top_three(self):
+        predictions = pd.DataFrame(
+            {
+                "race_id": [1, 1, 1, 1, 2, 2, 2],
+                "horse_number": [1, 2, 3, 4, 1, 2, 3],
+                "finish": [4, 1, 2, 3, 2, 3, 4],
+                "score": [0.1, 0.9, 0.8, 0.7, 0.9, 0.8, 0.7],
+            }
+        )
+
+        metrics = train_model._top_three_metrics(predictions, "score")
+
+        self.assertEqual(metrics["races"], 1)
+        self.assertEqual(metrics["excluded_races"], 1)
+        self.assertEqual(metrics["winner_hit_rate"], 1)
+
+    def test_popularity_baseline_excludes_whole_races_with_missing_popularity(self):
+        class EqualProbabilityModel:
+            def predict_proba(self, features):
+                return np.full((len(features), 2), 0.5)
+
+        test_data = pd.DataFrame(
+            {
+                "race_id": [1] * 4 + [2] * 4,
+                "race_date": pd.to_datetime(
+                    ["2025-01-01"] * 4 + ["2025-01-02"] * 4
+                ),
+                "venue": ["Tokyo"] * 8,
+                "race_name": ["Test"] * 8,
+                "horse_number": [1, 2, 3, 4] * 2,
+                "finish": [1, 2, 3, 4] * 2,
+                "target_top3": [1, 1, 1, 0] * 2,
+                "popularity": [1, 2, 3, 4, np.nan, 1, 2, 3],
+                "feature": range(8),
+            }
+        )
+
+        metrics, _ = train_model.evaluate_model(
+            EqualProbabilityModel(),
+            test_data,
+            ["feature"],
+        )
+
+        baseline = metrics["popularity_baseline"]
+        self.assertEqual(baseline["races"], 1)
+        self.assertEqual(baseline["excluded_races"], 0)
+        self.assertEqual(baseline["excluded_incomplete_market_races"], 1)
+        self.assertEqual(
+            metrics["race_level_top3_on_market_coverage"]["races"],
+            baseline["races"],
+        )
 
     def test_prediction_output_breaks_score_ties_by_horse_number(self):
         class EqualProbabilityModel:
@@ -266,6 +319,56 @@ class TopThreeModelTests(unittest.TestCase):
 
 
 class UpsetFeatureTests(unittest.TestCase):
+    def test_chronological_split_falls_back_when_configured_train_period_is_empty(self):
+        dates = pd.date_range("2024-01-01", periods=20, freq="D")
+        data = pd.DataFrame(
+            {
+                "race_date": list(dates),
+                "target_race_upset": [0, 1] * 10,
+            }
+        )
+
+        train, validation, test, split = (
+            train_upset_model.chronological_split(data)
+        )
+
+        self.assertEqual(
+            split["strategy"],
+            "chronological_date_proportions",
+        )
+        self.assertGreater(len(train), 0)
+        self.assertGreater(len(validation), 0)
+        self.assertGreater(len(test), 0)
+        self.assertLess(train["race_date"].max(), validation["race_date"].min())
+        self.assertLess(
+            validation["race_date"].max(),
+            test["race_date"].min(),
+        )
+        self.assertEqual(
+            len(train) + len(validation) + len(test),
+            len(data),
+        )
+
+    def test_chronological_split_keeps_configured_periods_when_available(self):
+        dates = pd.to_datetime(
+            ["2020-06-01", "2023-06-01", "2025-06-01"]
+        )
+        data = pd.DataFrame(
+            {
+                "race_date": dates,
+                "target_race_upset": [0, 1, 0],
+            }
+        )
+
+        train, validation, test, split = (
+            train_upset_model.chronological_split(data)
+        )
+
+        self.assertEqual(split["strategy"], "configured_date_ranges")
+        self.assertEqual(len(train), 1)
+        self.assertEqual(len(validation), 1)
+        self.assertEqual(len(test), 1)
+
     def test_selects_threshold_by_validation_balanced_accuracy(self):
         labels = pd.Series([0, 0, 1, 1, 0, 1])
         probabilities = np.array([0.1, 0.4, 0.35, 0.8, 0.45, 0.7])
