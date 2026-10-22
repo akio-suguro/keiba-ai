@@ -11,7 +11,7 @@
 #   [STOP]  DB容量上限で巡回終了
 #   [DONE]  最終集計
 #
-# DBファイルが90,000,000バイト以上になると巡回を終了する。
+# 通常の全期間巡回ではDBファイルが90,000,000バイト以上になると終了する。
 #
 # 既存DB:
 #   races(id, url, race_date, venue, race_name,
@@ -1660,7 +1660,11 @@ def crawl_one_race(
 # メイン
 # ============================================================
 
-def main(*, current_month_only: bool = False) -> int:
+def main(
+    *,
+    current_month_only: bool = False,
+    enforce_database_size_limit: bool = True,
+) -> int:
     conn = connect_db()
 
     total_ok = 0
@@ -1672,7 +1676,10 @@ def main(*, current_month_only: bool = False) -> int:
 
     try:
         init_db(conn)
-        size_limit_reached = database_size_bytes() >= MAX_DATABASE_SIZE_BYTES
+        size_limit_reached = (
+            enforce_database_size_limit
+            and database_size_bytes() >= MAX_DATABASE_SIZE_BYTES
+        )
         if size_limit_reached:
             print(
                 f"[STOP] DB容量が上限に達しています: "
@@ -1828,14 +1835,15 @@ def main(*, current_month_only: bool = False) -> int:
                         else:
                             total_error += 1
 
-                        db_size = database_size_bytes()
-                        if db_size >= MAX_DATABASE_SIZE_BYTES:
-                            print(
-                                f"[STOP] DB容量が上限に達しました: "
-                                f"{db_size:,} / "
-                                f"{MAX_DATABASE_SIZE_BYTES:,} bytes"
-                            )
-                            size_limit_reached = True
+                        if enforce_database_size_limit:
+                            db_size = database_size_bytes()
+                            if db_size >= MAX_DATABASE_SIZE_BYTES:
+                                print(
+                                    f"[STOP] DB容量が上限に達しました: "
+                                    f"{db_size:,} / "
+                                    f"{MAX_DATABASE_SIZE_BYTES:,} bytes"
+                                )
+                                size_limit_reached = True
 
     finally:
         conn.close()

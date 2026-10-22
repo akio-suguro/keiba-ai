@@ -436,19 +436,82 @@ def select_race_from_search():
 st.markdown(
     """
     <style>
+    [data-testid="stMainBlockContainer"] {
+      max-width: 1440px;
+      padding-top: 1.25rem;
+      padding-bottom: 1.5rem;
+    }
+    h1 {
+      font-size: clamp(1.5rem, 2.2vw, 2rem) !important;
+      line-height: 1.2 !important;
+      margin-bottom: 0.25rem !important;
+    }
+    h2 {
+      font-size: 1.3rem !important;
+      line-height: 1.25 !important;
+      margin-top: 1rem !important;
+      margin-bottom: 0.35rem !important;
+    }
+    h3 {
+      font-size: 1.05rem !important;
+      line-height: 1.3 !important;
+    }
+    [data-testid="stVerticalBlock"] {
+      gap: 0.75rem;
+    }
+    [data-testid="stMetric"] {
+      padding: 0.45rem 0.6rem;
+    }
+    [data-testid="stMetricLabel"] {
+      font-size: 0.82rem;
+    }
+    [data-testid="stMetricValue"] {
+      font-size: 1.25rem;
+    }
+    [data-testid="stExpander"] summary p {
+      font-size: 0.95rem;
+    }
     @media (max-width: 700px) {
-      [data-testid="stAppViewBlockContainer"] {
-        padding-left: 1rem;
-        padding-right: 1rem;
+      [data-testid="stMainBlockContainer"] {
+        padding: 0.65rem 0.7rem 1rem;
       }
       [data-testid="stHorizontalBlock"] {
-        flex-direction: column;
-        gap: 0.5rem;
+        flex-wrap: wrap;
+        gap: 0.4rem;
       }
-      [data-testid="column"] {
-        width: 100% !important;
-        flex: 1 1 100% !important;
-        min-width: 100% !important;
+      [data-testid="stColumn"] {
+        box-sizing: border-box;
+        width: calc(50% - 0.2rem) !important;
+        flex: 1 1 calc(50% - 0.2rem) !important;
+        min-width: 0 !important;
+      }
+      h1 {
+        font-size: 1.35rem !important;
+      }
+      h2 {
+        font-size: 1.1rem !important;
+        margin-top: 0.75rem !important;
+      }
+      h3 {
+        font-size: 0.98rem !important;
+      }
+      [data-testid="stMarkdownContainer"] p {
+        font-size: 0.88rem;
+        line-height: 1.45;
+      }
+      [data-testid="stCaptionContainer"] {
+        font-size: 0.75rem;
+        line-height: 1.4;
+      }
+      [data-testid="stMetric"] {
+        padding: 0.35rem 0.45rem;
+      }
+      [data-testid="stMetricValue"] {
+        font-size: 1.05rem;
+      }
+      [data-testid="stSelectbox"] label,
+      [data-testid="stTextInput"] label {
+        font-size: 0.82rem;
       }
     }
     </style>

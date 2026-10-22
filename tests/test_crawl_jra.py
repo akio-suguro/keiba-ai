@@ -7,7 +7,23 @@ from unittest.mock import ANY, Mock, patch
 
 from bs4 import BeautifulSoup
 
-from scripts import crawl_jra
+from scripts import crawl_current_month, crawl_jra
+
+
+class CurrentMonthCrawlerEntrypointTests(unittest.TestCase):
+    def test_runs_shared_crawler_in_current_month_only_mode(self):
+        with patch.object(
+            crawl_current_month.crawl_jra,
+            "main",
+            return_value=0,
+        ) as crawl_main:
+            result = crawl_current_month.main()
+
+        self.assertEqual(result, 0)
+        crawl_main.assert_called_once_with(
+            current_month_only=True,
+            enforce_database_size_limit=False,
+        )
 
 
 class RaceIndexUrlTests(unittest.TestCase):
@@ -512,6 +528,43 @@ class MainCrawlerTests(unittest.TestCase):
 
         self.assertEqual(result, 0)
         checkdigits.assert_not_called()
+
+    def test_current_month_crawl_ignores_database_size_limit(self):
+        today = date.today()
+        yymm = f"{today.year % 100:02d}{today.month:02d}"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with (
+                patch.object(
+                    crawl_jra,
+                    "DB_PATH",
+                    Path(temp_dir) / "test.sqlite",
+                ),
+                patch.object(
+                    crawl_jra,
+                    "database_size_bytes",
+                    return_value=crawl_jra.MAX_DATABASE_SIZE_BYTES,
+                ) as database_size_bytes,
+                patch.object(
+                    crawl_jra,
+                    "year_month_checkdigits",
+                    return_value={yymm: "3F"},
+                ) as checkdigits,
+                patch.object(
+                    crawl_jra,
+                    "discover_race_days",
+                    return_value=[],
+                ) as discover_race_days,
+                patch.object(crawl_jra.SESSION, "close"),
+            ):
+                result = crawl_jra.main(
+                    current_month_only=True,
+                    enforce_database_size_limit=False,
+                )
+
+        self.assertEqual(result, 0)
+        checkdigits.assert_called_once()
+        discover_race_days.assert_called_once()
+        database_size_bytes.assert_not_called()
 
     def test_main_treats_current_month_parameter_error_as_waiting(self):
         today = date.today()
