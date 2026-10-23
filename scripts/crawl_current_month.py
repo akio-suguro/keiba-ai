@@ -1,4 +1,4 @@
-"""Crawl completed JRA races in the current month only."""
+"""Crawl current-month results and published entries for upcoming races."""
 
 import sys
 

@@ -224,6 +224,58 @@ class JraSearchTests(unittest.TestCase):
 
         self.assertEqual(days, [])
 
+    def test_discovers_published_upcoming_cards_in_requested_month(self):
+        top_page = BeautifulSoup(
+            """
+            <a onclick="doAction('pw01drl00052026040820261024/BC')">
+              10月24日 東京
+            </a>
+            <a onclick="doAction('pw01drl00052026040920261025/AA')">
+              10月25日 東京
+            </a>
+            <a onclick="doAction('pw01drl00052026041020261101/AA')">
+              11月1日 東京
+            </a>
+            """,
+            "html.parser",
+        )
+        saturday = BeautifulSoup(
+            """
+            <a onclick="doAction('pw01dde0105202604080120261024/D9')">
+              1R
+            </a>
+            """,
+            "html.parser",
+        )
+        sunday = BeautifulSoup(
+            """
+            <a onclick="doAction('pw01dde0105202604090120261025/AA')">
+              1R
+            </a>
+            """,
+            "html.parser",
+        )
+        with patch.object(
+            crawl_jra,
+            "fetch_jra_card_page",
+            side_effect=[top_page, saturday, sunday],
+        ) as fetch_page:
+            cnames = crawl_jra.discover_upcoming_race_cnames(
+                2026,
+                10,
+                today=date(2026, 10, 23),
+            )
+
+        self.assertEqual(
+            cnames,
+            [
+                "pw01dde0105202604080120261024/D9",
+                "pw01dde0105202604090120261025/AA",
+            ],
+        )
+        fetch_page.assert_any_call(crawl_jra.JRA_CARD_INDEX_CNAME)
+        self.assertEqual(fetch_page.call_count, 3)
+
     def test_reads_race_date_venue_and_number_from_result_cname(self):
         cname = "pw01sde1006202501010120250105/6B"
 
@@ -232,6 +284,30 @@ class JraSearchTests(unittest.TestCase):
             {
                 "race_date": "2025-01-05",
                 "venue": "中山",
+                "race_number": 1,
+            },
+        )
+
+    def test_reads_race_date_venue_and_number_from_entry_cname(self):
+        cname = "pw01dde0105202604080120261024/D9"
+
+        self.assertEqual(
+            crawl_jra.race_cname_details(cname),
+            {
+                "race_date": "2026-10-24",
+                "venue": "東京",
+                "race_number": 1,
+            },
+        )
+
+    def test_reads_same_day_result_cname(self):
+        cname = "pw01sde0105202604080120261024/DE"
+
+        self.assertEqual(
+            crawl_jra.race_cname_details(cname),
+            {
+                "race_date": "2026-10-24",
+                "venue": "東京",
                 "race_number": 1,
             },
         )
@@ -343,6 +419,55 @@ class SaveRaceDeduplicationTests(unittest.TestCase):
         self.assertEqual(races[0]["race_number"], 1)
         self.assertEqual(horse_count, 5)
         self.assertTrue(already_saved)
+
+    def test_entry_only_race_can_be_updated_with_result_later(self):
+        entry_cname = "pw01dde0105202604080120261024/D9"
+        race = {
+            "url": f"{crawl_jra.JRA_CARD_URL}?CNAME={entry_cname}",
+            "race_date": "2026-10-24",
+            "venue": "東京",
+            "race_name": "テストレース",
+            "race_number": 1,
+        }
+        horses = [
+            {
+                "finish": None,
+                "horse_number": number,
+                "horse_name": f"Horse {number}",
+            }
+            for number in range(1, 6)
+        ]
+
+        with sqlite3.connect(":memory:") as conn:
+            conn.row_factory = sqlite3.Row
+            crawl_jra.init_db(conn)
+            crawl_jra.save_race(conn, race, horses, [])
+
+            self.assertFalse(
+                crawl_jra.race_result_already_saved(conn, entry_cname)
+            )
+            self.assertFalse(crawl_jra.race_has_results(conn, entry_cname))
+
+            result_race = {
+                **race,
+                "url": (
+                    f"{crawl_jra.JRA_DB_URL}?"
+                    "CNAME=pw01sde1005202604080120261024/DE"
+                ),
+            }
+            result_horses = [
+                {**horse, "finish": number}
+                for number, horse in enumerate(horses, start=1)
+            ]
+            crawl_jra.save_race(conn, result_race, result_horses, [])
+
+            self.assertTrue(
+                crawl_jra.race_result_already_saved(
+                    conn,
+                    "pw01sde1005202604080120261024/DE",
+                )
+            )
+            self.assertTrue(crawl_jra.race_has_results(conn, entry_cname))
 
 
 class UnconfirmedRaceTests(unittest.TestCase):
@@ -500,12 +625,66 @@ class MainCrawlerTests(unittest.TestCase):
                     "discover_race_days",
                     side_effect=record_month,
                 ),
+                patch.object(
+                    crawl_jra,
+                    "discover_upcoming_race_cnames",
+                    return_value=[],
+                ) as discover_entries,
                 patch.object(crawl_jra.SESSION, "close"),
             ):
                 result = crawl_jra.main(current_month_only=True)
 
         self.assertEqual(result, 0)
         self.assertEqual(scanned_months, [(today.year, today.month)])
+        discover_entries.assert_called_once_with(
+            today.year,
+            today.month,
+            today=today,
+        )
+
+    def test_current_month_crawls_published_future_entries(self):
+        today = date.today()
+        future_date = today + timedelta(days=1)
+        if future_date.month != today.month:
+            future_date = today
+        entry_cname = (
+            f"pw01dde0105{today.year}010101"
+            f"{future_date:%Y%m%d}/D9"
+        )
+        month_key = f"{today.year % 100:02d}{today.month:02d}"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with (
+                patch.object(
+                    crawl_jra,
+                    "DB_PATH",
+                    Path(temp_dir) / "test.sqlite",
+                ),
+                patch.object(
+                    crawl_jra,
+                    "year_month_checkdigits",
+                    return_value={month_key: "3F"},
+                ),
+                patch.object(crawl_jra, "discover_race_days", return_value=[]),
+                patch.object(
+                    crawl_jra,
+                    "discover_upcoming_race_cnames",
+                    return_value=[entry_cname],
+                ),
+                patch.object(
+                    crawl_jra,
+                    "crawl_one_entry",
+                    return_value=(5, True),
+                ) as crawl_entry,
+                patch.object(crawl_jra.SESSION, "close"),
+            ):
+                result = crawl_jra.main(
+                    current_month_only=True,
+                    enforce_database_size_limit=False,
+                )
+
+        self.assertEqual(result, 0)
+        crawl_entry.assert_called_once()
+        self.assertEqual(crawl_entry.call_args.args[1], entry_cname)
 
     def test_main_stops_without_crawling_when_database_is_at_size_limit(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -554,6 +733,11 @@ class MainCrawlerTests(unittest.TestCase):
                     "discover_race_days",
                     return_value=[],
                 ) as discover_race_days,
+                patch.object(
+                    crawl_jra,
+                    "discover_upcoming_race_cnames",
+                    return_value=[],
+                ),
                 patch.object(crawl_jra.SESSION, "close"),
             ):
                 result = crawl_jra.main(
@@ -802,6 +986,47 @@ class TransitionalRacePageTests(unittest.TestCase):
 
 
 class HorseFieldExtractionTests(unittest.TestCase):
+    def test_extracts_pre_race_horse_fields_from_jra_entry_table(self):
+        rows = "".join(
+            f"""
+            <tr>
+              <td class="waku"><img alt="{number}枠"></td>
+              <td class="num">{number}</td>
+              <td class="horse">
+                <a href="/JRADB/accessU.html?CNAME=horse{number}">
+                  Horse {number}
+                </a>
+              </td>
+              <td class="jockey">
+                <a href="/JRADB/accessK.html?CNAME=jockey{number}">
+                  Jockey {number}
+                </a>
+                {"牝3" if number == 1 else "牡4"}/鹿 56.0 kg
+              </td>
+            </tr>
+            """
+            for number in range(1, 6)
+        )
+        soup = BeautifulSoup(
+            f"<table>{rows}</table>",
+            "html.parser",
+        )
+
+        horses = crawl_jra.parse_entry_horses(soup)
+
+        self.assertEqual(len(horses), 5)
+        self.assertEqual(horses[0]["horse_name"], "Horse 1")
+        self.assertEqual(horses[0]["horse_number"], 1)
+        self.assertEqual(horses[0]["frame"], 1)
+        self.assertEqual(horses[0]["sex_age"], "牝3")
+        self.assertEqual(horses[0]["weight"], 56.0)
+        self.assertEqual(horses[0]["jockey"], "Jockey 1")
+        self.assertIsNone(horses[0]["finish"])
+        self.assertEqual(
+            horses[0]["horse_url"],
+            "https://www.jra.go.jp/JRADB/accessU.html?CNAME=horse1",
+        )
+
     def test_extracts_odds_popularity_and_raw_columns(self):
         soup = BeautifulSoup(
             """

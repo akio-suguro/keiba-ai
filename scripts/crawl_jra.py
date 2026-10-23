@@ -1,5 +1,5 @@
 # scripts/crawl_jra.py
-# JRA全レース結果クローラー
+# JRAレース結果・出馬表クローラー
 # 対象: 2002年〜現在
 #
 # HTMLはメモリ上で解析し、ファイルには保存しない。
@@ -44,7 +44,9 @@ from bs4 import BeautifulSoup
 
 BASE_URL = "https://www.jra.go.jp"
 JRA_DB_URL = f"{BASE_URL}/JRADB/accessS.html"
+JRA_CARD_URL = f"{BASE_URL}/JRADB/accessD.html"
 JRA_CHECKDIGIT_CNAME = "pw01skl00999999/B3"
+JRA_CARD_INDEX_CNAME = "pw01dli00/F3"
 
 START_YEAR = 2002
 CURRENT_YEAR = datetime.now().year
@@ -87,7 +89,7 @@ RACE_URL_PATTERN = re.compile(
     r"/datafile/seiseki/replay/(\d{4})/(\d{3})\.html"
 )
 RACE_CNAME_PATTERN = re.compile(
-    r"^pw01sde10"
+    r"^pw01(?:sde(?:01|10)|dde01)"
     r"(?P<venue_code>\d{2})"
     r"(?P<year>\d{4})"
     r"\d{4}"
@@ -492,6 +494,25 @@ def fetch_jra_search_page(cname: str) -> BeautifulSoup:
     return soup
 
 
+def fetch_jra_card_page(cname: str) -> BeautifulSoup:
+    """JRAの出馬表ページをCNAMEで取得する。"""
+    response = SESSION.post(
+        JRA_CARD_URL,
+        data={"cname": cname},
+        timeout=REQUEST_TIMEOUT,
+    )
+    response.raise_for_status()
+    response.encoding = "shift_jis"
+    time.sleep(REQUEST_INTERVAL)
+    soup = BeautifulSoup(response.text, "html.parser")
+    title = soup.title.get_text(" ", strip=True) if soup.title else ""
+    if "パラメータエラー" in title:
+        raise JraParameterError(
+            f"JRA出馬表がパラメータエラーを返しました: {cname}"
+        )
+    return soup
+
+
 def extract_cnames(soup: BeautifulSoup, prefix: str) -> list[str]:
     """リンクやonclickに埋め込まれたJRAのCNAMEを取得する。"""
     pattern = re.compile(rf"{re.escape(prefix)}[0-9A-Z/]+", re.IGNORECASE)
@@ -502,6 +523,34 @@ def extract_cnames(soup: BeautifulSoup, prefix: str) -> list[str]:
             if value:
                 cnames.extend(pattern.findall(value))
     return list(dict.fromkeys(cnames))
+
+
+def discover_upcoming_race_cnames(
+    year: int,
+    month: int,
+    today=None,
+) -> list[str]:
+    """出馬表トップから、当月かつ本日以降に開催するレースを取得する。"""
+    current_date = today or datetime.now().date()
+    soup = fetch_jra_card_page(JRA_CARD_INDEX_CNAME)
+    race_cnames = []
+
+    for race_day_cname in extract_cnames(soup, "pw01drl00"):
+        race_date = datetime.strptime(
+            extract_cname_race_date(race_day_cname),
+            "%Y-%m-%d",
+        ).date()
+        if (
+            race_date.year != year
+            or race_date.month != month
+            or race_date < current_date
+        ):
+            continue
+
+        day_soup = fetch_jra_card_page(race_day_cname)
+        race_cnames.extend(extract_cnames(day_soup, "pw01dde01"))
+
+    return list(dict.fromkeys(race_cnames))
 
 
 def fetch_year_month_checkdigits() -> dict[str, str]:
@@ -543,10 +592,10 @@ def extract_cname_race_date(cname: str) -> str:
 
 
 def race_cname_details(cname: str) -> dict[str, int | str]:
-    """JRAのレース結果CNAMEから日付、競馬場、レース番号を取り出す。"""
+    """JRAのレース結果・出馬表CNAMEから開催情報を取り出す。"""
     match = RACE_CNAME_PATTERN.fullmatch(cname)
     if not match:
-        raise ValueError(f"レース結果CNAMEの形式が不正です: {cname}")
+        raise ValueError(f"レースCNAMEの形式が不正です: {cname}")
 
     venue_code = match.group("venue_code")
     if venue_code not in JRA_VENUE_CODES:
@@ -639,7 +688,17 @@ def race_result_already_saved(
 
     row = conn.execute(
         """
-        SELECT r.id, COUNT(h.id) AS horse_count
+        SELECT
+            r.id,
+            COUNT(h.id) AS horse_count,
+            SUM(
+                CASE
+                    WHEN h.finish IS NOT NULL
+                         AND TRIM(CAST(h.finish AS TEXT)) <> ''
+                    THEN 1
+                    ELSE 0
+                END
+            ) AS finished_count
         FROM races r
         LEFT JOIN horses h ON h.race_id = r.id
         WHERE r.race_date = ?
@@ -653,7 +712,38 @@ def race_result_already_saved(
             details["race_number"],
         ),
     ).fetchone()
-    return bool(row and row["horse_count"] >= 5)
+    return bool(
+        row
+        and row["horse_count"] >= 5
+        and row["finished_count"] > 0
+    )
+
+
+def race_has_results(
+    conn: sqlite3.Connection,
+    cname: str,
+) -> bool:
+    """出馬表データで、結果が保存済みのレースを上書きしない。"""
+    details = race_cname_details(cname)
+    row = conn.execute(
+        """
+        SELECT 1
+        FROM races r
+        JOIN horses h ON h.race_id = r.id
+        WHERE r.race_date = ?
+          AND r.venue = ?
+          AND r.race_number = ?
+          AND h.finish IS NOT NULL
+          AND TRIM(CAST(h.finish AS TEXT)) <> ''
+        LIMIT 1
+        """,
+        (
+            details["race_date"],
+            details["venue"],
+            details["race_number"],
+        ),
+    ).fetchone()
+    return row is not None
 
 
 def race_index_url(year: int) -> str:
@@ -1262,6 +1352,119 @@ def parse_horses(soup: BeautifulSoup) -> list[dict]:
     return list(unique.values())
 
 
+def parse_entry_horses(soup: BeautifulSoup) -> list[dict]:
+    """JRA出馬表から発走前に利用できる出走馬情報を取得する。"""
+    horses = []
+    for row in soup.select("tr"):
+        number_cell = row.select_one("td.num")
+        horse_cell = row.select_one("td.horse")
+        jockey_cell = row.select_one("td.jockey")
+        if number_cell is None or horse_cell is None:
+            continue
+
+        horse_number = to_int(
+            normalize_text(number_cell.get_text(" ", strip=True))
+        )
+        horse_link = horse_cell.select_one("a[href]")
+        horse_name = (
+            normalize_text(horse_link.get_text(" ", strip=True))
+            if horse_link
+            else ""
+        )
+        if (
+            horse_number is None
+            or not 1 <= horse_number <= 20
+            or not horse_name
+        ):
+            continue
+
+        jockey_text = (
+            normalize_text(jockey_cell.get_text(" ", strip=True))
+            if jockey_cell
+            else ""
+        )
+        jockey_link = (
+            jockey_cell.select_one("a[href]")
+            if jockey_cell
+            else None
+        )
+        jockey = (
+            normalize_text(jockey_link.get_text(" ", strip=True))
+            if jockey_link
+            else None
+        )
+        sex_age_match = re.search(
+            r"(牡|牝|セン|せん|セ)\s*(\d+)",
+            jockey_text,
+        )
+        sex_age = None
+        if sex_age_match:
+            sex = sex_age_match.group(1)
+            normalized_sex = "セン" if sex in {"セ", "せん"} else sex
+            sex_age = f"{normalized_sex}{sex_age_match.group(2)}"
+        weight_match = re.search(
+            r"(\d+(?:\.\d+)?)\s*kg",
+            jockey_text,
+            re.IGNORECASE,
+        )
+        weight = (
+            float(weight_match.group(1))
+            if weight_match
+            else None
+        )
+
+        frame = None
+        frame_cell = row.select_one("td.waku")
+        if frame_cell:
+            frame_text = normalize_text(
+                frame_cell.get_text(" ", strip=True)
+            )
+            frame_image = frame_cell.select_one("img[alt]")
+            if frame_image:
+                frame_text = (
+                    f"{frame_text} "
+                    f"{normalize_text(frame_image.get('alt', ''))}"
+                )
+            frame_match = re.search(r"\d+", frame_text)
+            if frame_match:
+                frame = int(frame_match.group())
+
+        horses.append(
+            {
+                "finish": None,
+                "frame": frame,
+                "horse_number": horse_number,
+                "horse_name": horse_name,
+                "horse_mark": None,
+                "sex_age": sex_age,
+                "weight": weight,
+                "jockey": jockey,
+                "time": None,
+                "margin": None,
+                "last_3f": None,
+                "body_weight": None,
+                "weight_change": None,
+                "trainer": None,
+                "odds": None,
+                "popularity": None,
+                "corner_order": None,
+                "horse_url": urljoin(BASE_URL, horse_link["href"]),
+                "jockey_url": (
+                    urljoin(BASE_URL, jockey_link["href"])
+                    if jockey_link
+                    else None
+                ),
+                "trainer_url": None,
+                "source_fields": {
+                    "性齢・毛色・斤量・騎手": jockey_text,
+                },
+            }
+        )
+
+    unique = {horse["horse_number"]: horse for horse in horses}
+    return list(unique.values())
+
+
 # ============================================================
 # 払戻金データ
 # ============================================================
@@ -1656,6 +1859,53 @@ def crawl_one_race(
         return 0, 0, False
 
 
+def crawl_one_entry(
+    conn: sqlite3.Connection,
+    cname: str,
+) -> tuple[int, bool]:
+    """JRA出馬表から、未開催レースと出走馬を保存する。"""
+    url = f"{JRA_CARD_URL}?CNAME={cname}"
+    try:
+        soup = fetch_jra_card_page(cname)
+        race = extract_race_info(soup, url)
+        details = race_cname_details(cname)
+        if race["race_date"] and race["race_date"] != details["race_date"]:
+            raise ValueError(
+                "ページの日付と出馬表CNAMEの日付が一致しません: "
+                f"{race['race_date']} != {details['race_date']}"
+            )
+        race["race_date"] = details["race_date"]
+        race["venue"] = details["venue"]
+        race["race_number"] = details["race_number"]
+
+        if race_has_results(conn, cname):
+            print(
+                f"[SKIP] 結果保存済みのレースは出馬表で上書きしません: "
+                f"{race['race_date']} {race['venue']} "
+                f"{race['race_number']}R"
+            )
+            return 0, True
+
+        horses = parse_entry_horses(soup)
+        if len(horses) < 5:
+            raise ValueError(
+                f"出馬表の出走馬データが少なすぎます（{len(horses)}件）。"
+                "HTML構造の確認が必要です"
+            )
+
+        save_race(conn, race, horses, [])
+        print(
+            f"[ENTRY] {race['race_date']} {race['venue']} "
+            f"{race['race_name']} "
+            f"| 出走馬 {len(horses)}件"
+        )
+        return len(horses), True
+    except Exception as exc:
+        print(f"[ERROR] {url} | {type(exc).__name__}: {exc}")
+        save_error(conn, url, exc)
+        return 0, False
+
+
 # ============================================================
 # メイン
 # ============================================================
@@ -1845,6 +2095,60 @@ def main(
                                 )
                                 size_limit_reached = True
 
+        if current_month_only and not size_limit_reached:
+            try:
+                entry_cnames = discover_upcoming_race_cnames(
+                    today.year,
+                    today.month,
+                    today=today,
+                )
+            except Exception as exc:
+                print(
+                    f"[ERROR] 当月の公式出馬表 | "
+                    f"{type(exc).__name__}: {exc}"
+                )
+                save_error(conn, JRA_CARD_URL, exc)
+                total_error += 1
+            else:
+                print(
+                    f"[SCAN] {today.year}年{today.month}月 "
+                    f"| 未開催レースの出馬表 {len(entry_cnames)}件"
+                )
+                for cname in entry_cnames:
+                    try:
+                        details = race_cname_details(cname)
+                        race_date = datetime.strptime(
+                            details["race_date"],
+                            "%Y-%m-%d",
+                        ).date()
+                        if (
+                            race_date.year != today.year
+                            or race_date.month != today.month
+                            or race_date < today
+                        ):
+                            total_skipped += 1
+                            continue
+                        if race_has_results(conn, cname):
+                            total_skipped += 1
+                            continue
+                        horse_count, success = crawl_one_entry(conn, cname)
+                        if success:
+                            total_ok += 1
+                            total_horses += horse_count
+                        else:
+                            total_error += 1
+                    except Exception as exc:
+                        print(
+                            f"[ERROR] 出馬表CNAME {cname} | "
+                            f"{type(exc).__name__}: {exc}"
+                        )
+                        save_error(
+                            conn,
+                            f"{JRA_CARD_URL}?CNAME={cname}",
+                            exc,
+                        )
+                        total_error += 1
+
     finally:
         conn.close()
         SESSION.close()
@@ -1868,7 +2172,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--current-month-only",
         action="store_true",
-        help="crawl completed races in the current month only",
+        help="crawl current-month results and published upcoming race entries",
     )
     args = parser.parse_args()
     sys.exit(main(current_month_only=args.current_month_only))
