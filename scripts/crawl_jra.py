@@ -1359,11 +1359,13 @@ def parse_entry_horses(soup: BeautifulSoup) -> list[dict]:
         number_cell = row.select_one("td.num")
         horse_cell = row.select_one("td.horse")
         jockey_cell = row.select_one("td.jockey")
-        if number_cell is None or horse_cell is None:
+        if horse_cell is None:
             continue
 
-        horse_number = to_int(
-            normalize_text(number_cell.get_text(" ", strip=True))
+        horse_number = (
+            to_int(normalize_text(number_cell.get_text(" ", strip=True)))
+            if number_cell
+            else None
         )
         horse_link = horse_cell.select_one("a[href]")
         horse_name = (
@@ -1372,8 +1374,7 @@ def parse_entry_horses(soup: BeautifulSoup) -> list[dict]:
             else ""
         )
         if (
-            horse_number is None
-            or not 1 <= horse_number <= 20
+            (horse_number is not None and not 1 <= horse_number <= 20)
             or not horse_name
         ):
             continue
@@ -1412,6 +1413,63 @@ def parse_entry_horses(soup: BeautifulSoup) -> list[dict]:
             if weight_match
             else None
         )
+        odds_element = horse_cell.select_one(".odds .num")
+        odds = (
+            to_float(odds_element.get_text(" ", strip=True))
+            if odds_element
+            else None
+        )
+        popularity_element = horse_cell.select_one(".odds .pop_rank")
+        popularity = (
+            to_int(popularity_element.get_text(" ", strip=True))
+            if popularity_element
+            else None
+        )
+        trainer_cell = horse_cell.select_one(".trainer")
+        trainer_element = (
+            trainer_cell.select_one("a")
+            if trainer_cell
+            else None
+        )
+        trainer_text = (
+            normalize_text(trainer_cell.get_text(" ", strip=True))
+            if trainer_cell
+            else ""
+        )
+        trainer_division = (
+            trainer_cell.select_one(".division")
+            if trainer_cell
+            else None
+        )
+        if trainer_division:
+            trainer_text = trainer_text.removesuffix(
+                normalize_text(
+                    trainer_division.get_text(" ", strip=True)
+                )
+            ).strip()
+        trainer = (
+            normalize_text(trainer_element.get_text(" ", strip=True))
+            if trainer_element
+            else trainer_text or None
+        )
+
+        def linked_url(element) -> str | None:
+            if element is None:
+                return None
+            href = element.get("href", "").strip()
+            if href and href != "#":
+                return urljoin(BASE_URL, href)
+            action = re.search(
+                r"doAction\(\s*['\"]([^'\"]+)['\"]\s*,\s*"
+                r"['\"]([^'\"]+)['\"]",
+                element.get("onclick", ""),
+            )
+            if not action:
+                return None
+            return (
+                f"{urljoin(BASE_URL, action.group(1))}"
+                f"?CNAME={action.group(2)}"
+            )
 
         frame = None
         frame_cell = row.select_one("td.waku")
@@ -1439,30 +1497,46 @@ def parse_entry_horses(soup: BeautifulSoup) -> list[dict]:
                 "sex_age": sex_age,
                 "weight": weight,
                 "jockey": jockey,
+                "trainer": trainer,
                 "time": None,
                 "margin": None,
                 "last_3f": None,
                 "body_weight": None,
                 "weight_change": None,
-                "trainer": None,
-                "odds": None,
-                "popularity": None,
+                "odds": odds,
+                "popularity": popularity,
                 "corner_order": None,
-                "horse_url": urljoin(BASE_URL, horse_link["href"]),
-                "jockey_url": (
-                    urljoin(BASE_URL, jockey_link["href"])
-                    if jockey_link
-                    else None
-                ),
-                "trainer_url": None,
+                "horse_url": linked_url(horse_link),
+                "jockey_url": linked_url(jockey_link),
+                "trainer_url": linked_url(trainer_element),
                 "source_fields": {
                     "性齢・毛色・斤量・騎手": jockey_text,
+                    **(
+                        {"調教師所属": normalize_text(
+                            trainer_division.get_text(" ", strip=True)
+                        )}
+                        if trainer_division
+                        else {}
+                    ),
                 },
             }
         )
 
-    unique = {horse["horse_number"]: horse for horse in horses}
-    return list(unique.values())
+    unique = {
+        (
+            horse["horse_number"]
+            if horse["horse_number"] is not None
+            else f"unassigned:{horse['horse_name']}"
+        ): horse
+        for horse in horses
+    }
+    unique_horses = list(unique.values())
+    numbered_horses = [
+        horse
+        for horse in unique_horses
+        if horse["horse_number"] is not None
+    ]
+    return numbered_horses or unique_horses
 
 
 # ============================================================
@@ -1862,7 +1936,7 @@ def crawl_one_race(
 def crawl_one_entry(
     conn: sqlite3.Connection,
     cname: str,
-) -> tuple[int, bool]:
+) -> tuple[int, bool | None]:
     """JRA出馬表から、未開催レースと出走馬を保存する。"""
     url = f"{JRA_CARD_URL}?CNAME={cname}"
     try:
@@ -1900,6 +1974,9 @@ def crawl_one_entry(
             f"| 出走馬 {len(horses)}件"
         )
         return len(horses), True
+    except JraParameterError as exc:
+        print(f"[WAIT] JRA出馬表が未公開です: {url} | {exc}")
+        return 0, None
     except Exception as exc:
         print(f"[ERROR] {url} | {type(exc).__name__}: {exc}")
         save_error(conn, url, exc)
@@ -2132,7 +2209,9 @@ def main(
                             total_skipped += 1
                             continue
                         horse_count, success = crawl_one_entry(conn, cname)
-                        if success:
+                        if success is None:
+                            total_unconfirmed += 1
+                        elif success:
                             total_ok += 1
                             total_horses += horse_count
                         else:

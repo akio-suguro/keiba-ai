@@ -993,15 +993,34 @@ class HorseFieldExtractionTests(unittest.TestCase):
               <td class="waku"><img alt="{number}枠"></td>
               <td class="num">{number}</td>
               <td class="horse">
-                <a href="/JRADB/accessU.html?CNAME=horse{number}">
-                  Horse {number}
-                </a>
+                <div class="name_line">
+                  <div class="name">
+                    <a href="/JRADB/accessU.html?CNAME=horse{number}">
+                      Horse {number}
+                    </a>
+                  </div>
+                  <div class="odds">
+                    <span class="num">{number}.5</span>
+                    <span class="pop_rank">({number} 番人気)</span>
+                  </div>
+                </div>
+                <p class="trainer">
+                  <a href="#" onclick="return doAction(
+                    '/JRADB/accessC.html', 'trainer{number}/AA');">
+                    Trainer {number}
+                  </a>
+                  <span class="division">(美浦)</span>
+                </p>
               </td>
               <td class="jockey">
-                <a href="/JRADB/accessK.html?CNAME=jockey{number}">
+                <p class="jockey">
+                  <a href="#" onclick="return doAction(
+                    '/JRADB/accessK.html', 'jockey{number}/BB');">
                   Jockey {number}
-                </a>
-                {"牝3" if number == 1 else "牡4"}/鹿 56.0 kg
+                  </a>
+                </p>
+                <p class="age">{"牝3" if number == 1 else "牡4"}/鹿</p>
+                <p class="weight">56.0 kg</p>
               </td>
             </tr>
             """
@@ -1021,11 +1040,137 @@ class HorseFieldExtractionTests(unittest.TestCase):
         self.assertEqual(horses[0]["sex_age"], "牝3")
         self.assertEqual(horses[0]["weight"], 56.0)
         self.assertEqual(horses[0]["jockey"], "Jockey 1")
+        self.assertEqual(horses[0]["trainer"], "Trainer 1")
+        self.assertEqual(horses[0]["odds"], 1.5)
+        self.assertEqual(horses[0]["popularity"], 1)
+        self.assertEqual(
+            horses[0]["trainer_url"],
+            "https://www.jra.go.jp/JRADB/accessC.html?CNAME=trainer1/AA",
+        )
+        self.assertEqual(
+            horses[0]["jockey_url"],
+            "https://www.jra.go.jp/JRADB/accessK.html?CNAME=jockey1/BB",
+        )
         self.assertIsNone(horses[0]["finish"])
         self.assertEqual(
             horses[0]["horse_url"],
             "https://www.jra.go.jp/JRADB/accessU.html?CNAME=horse1",
         )
+
+    def test_extracts_trainer_without_profile_link(self):
+        soup = BeautifulSoup(
+            """
+            <table>
+              <tr>
+                <td class="num">1</td>
+                <td class="horse">
+                  <a href="/horse.html">Horse</a>
+                  <p class="trainer">
+                    Trainer Name <span class="division">(本会外)</span>
+                  </p>
+                </td>
+              </tr>
+            </table>
+            """,
+            "html.parser",
+        )
+
+        horse = crawl_jra.parse_entry_horses(soup)[0]
+
+        self.assertEqual(horse["trainer"], "Trainer Name")
+        self.assertIsNone(horse["trainer_url"])
+
+    def test_keeps_entries_before_horse_numbers_are_assigned(self):
+        rows = "".join(
+            f"""
+            <tr>
+              <td class="waku"></td>
+              <td class="num"></td>
+              <td class="horse">
+                <div class="name">
+                  <a href="/horse{number}.html">Horse {number}</a>
+                </div>
+                <p class="trainer">Trainer {number} <span class="division">
+                  (美浦)
+                </span></p>
+              </td>
+              <td class="jockey">
+                <p class="age">牡3/鹿</p>
+                <p class="weight">56.0 <span>kg</span></p>
+                <p class="jockey"><a href="#">Jockey {number}</a></p>
+              </td>
+            </tr>
+            """
+            for number in range(1, 6)
+        )
+        soup = BeautifulSoup(f"<table>{rows}</table>", "html.parser")
+
+        horses = crawl_jra.parse_entry_horses(soup)
+
+        self.assertEqual(len(horses), 5)
+        self.assertEqual(
+            [horse["horse_name"] for horse in horses],
+            [f"Horse {number}" for number in range(1, 6)],
+        )
+        self.assertTrue(
+            all(horse["horse_number"] is None for horse in horses)
+        )
+        self.assertTrue(
+            all(horse["frame"] is None for horse in horses)
+        )
+        self.assertEqual(horses[0]["trainer"], "Trainer 1")
+        self.assertEqual(horses[0]["jockey"], "Jockey 1")
+
+    def test_ignores_unassigned_candidates_when_card_has_numbered_entries(self):
+        rows = "".join(
+            f"""
+            <tr>
+              <td class="num">{number}</td>
+              <td class="horse">
+                <div class="name"><a href="/horse{number}.html">
+                  Horse {number}
+                </a></div>
+              </td>
+            </tr>
+            """
+            for number in range(1, 6)
+        )
+        rows += """
+            <tr>
+              <td class="num"></td>
+              <td class="horse">
+                <div class="name"><a href="/candidate.html">
+                  Unassigned candidate
+                </a></div>
+              </td>
+            </tr>
+        """
+        soup = BeautifulSoup(f"<table>{rows}</table>", "html.parser")
+
+        horses = crawl_jra.parse_entry_horses(soup)
+
+        self.assertEqual(len(horses), 5)
+        self.assertTrue(
+            all(horse["horse_number"] is not None for horse in horses)
+        )
+
+    def test_treats_unpublished_entry_page_as_waiting_not_failure(self):
+        with (
+            sqlite3.connect(":memory:") as conn,
+            patch.object(
+                crawl_jra,
+                "fetch_jra_card_page",
+                side_effect=crawl_jra.JraParameterError("not published"),
+            ),
+            patch.object(crawl_jra, "save_error") as save_error,
+        ):
+            result = crawl_jra.crawl_one_entry(
+                conn,
+                "pw01dde0105202604090120261025/09",
+            )
+
+        self.assertEqual(result, (0, None))
+        save_error.assert_not_called()
 
     def test_extracts_odds_popularity_and_raw_columns(self):
         soup = BeautifulSoup(

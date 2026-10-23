@@ -416,10 +416,101 @@ def race_label(row):
     date = str(row["race_date"] or "日付不明")
     venue = str(row["venue"] or "競馬場不明")
     name = str(row["race_name"] or "レース名不明")
+    race_number = row["race_number"]
+    race_number_text = (
+        f"{int(race_number)}R" if pd.notna(race_number) else ""
+    )
     surface = str(row["surface"] or "")
     distance = row["distance_m"]
     distance_text = f"{int(distance)}m" if pd.notna(distance) else "距離不明"
-    return f"{date}｜{venue}｜{name}｜{surface}{distance_text}"
+    return (
+        f"{date}｜{venue}｜"
+        f"{race_number_text + '｜' if race_number_text else ''}"
+        f"{name}｜{surface}{distance_text}"
+    )
+
+
+def filter_races(
+    races,
+    *,
+    race_date="すべて",
+    venue="すべて",
+    race_number="すべて",
+    race_name="",
+):
+    """開催日・競馬場・レース番号・レース名で一覧を絞り込む。"""
+    filtered = races
+    if race_date != "すべて":
+        filtered = filtered[filtered["race_date"].astype(str) == race_date]
+    if venue != "すべて":
+        filtered = filtered[filtered["venue"].astype(str) == venue]
+    if race_number != "すべて":
+        numbers = pd.to_numeric(filtered["race_number"], errors="coerce")
+        filtered = filtered[numbers == race_number]
+    if race_name.strip():
+        filtered = filtered[
+            filtered["race_name"]
+            .fillna("")
+            .astype(str)
+            .str.contains(race_name.strip(), case=False, regex=False)
+        ]
+    return filtered
+
+
+def race_filter_controls(races, key_prefix):
+    """レース一覧用の開催日・競馬場・レース番号・レース名を表示する。"""
+    dates = sorted(
+        races["race_date"].dropna().astype(str).unique().tolist(),
+        reverse=True,
+    )
+    venues = sorted(
+        races["venue"].dropna().astype(str).unique().tolist()
+    )
+    race_numbers = sorted(
+        pd.to_numeric(races["race_number"], errors="coerce")
+        .dropna()
+        .astype(int)
+        .unique()
+        .tolist()
+    )
+    date_col, venue_col, number_col, name_col = st.columns([1, 1, 1, 2])
+    with date_col:
+        selected_date = st.selectbox(
+            "開催日",
+            ["すべて"] + dates,
+            key=f"{key_prefix}_date",
+        )
+    with venue_col:
+        selected_venue = st.selectbox(
+            "競馬場",
+            ["すべて"] + venues,
+            key=f"{key_prefix}_venue",
+        )
+    with number_col:
+        selected_race_number = st.selectbox(
+            "レース番号",
+            ["すべて"] + race_numbers,
+            format_func=lambda number: (
+                f"{number}R" if number != "すべて" else number
+            ),
+            key=f"{key_prefix}_number",
+        )
+    with name_col:
+        race_name = st.text_input(
+            "レース名",
+            placeholder="レース名で検索",
+            key=f"{key_prefix}_keyword",
+        )
+
+    filtered = filter_races(
+        races,
+        race_date=selected_date,
+        venue=selected_venue,
+        race_number=selected_race_number,
+        race_name=race_name,
+    )
+    st.caption(f"検索結果：{len(filtered):,} レース")
+    return filtered
 
 
 def display_value(value, suffix=""):
@@ -431,6 +522,9 @@ def display_value(value, suffix=""):
 
 def select_race_from_search():
     st.session_state["selected_race_id"] = st.session_state["search_race_id"]
+    st.session_state["race_select_date"] = "すべて"
+    st.session_state["race_select_venue"] = "すべて"
+    st.session_state["race_select_keyword"] = ""
 
 
 st.markdown(
@@ -547,10 +641,17 @@ race_labels = {
     int(row["id"]): race_label(row)
     for _, row in races.iterrows()
 }
-race_ids = list(race_labels)
+selection_races = race_filter_controls(races, "race_select")
+if selection_races.empty:
+    st.info(
+        "条件に一致するレースがありません。"
+        "対象レースは全件から選択できます。"
+    )
+    selection_races = races
+race_ids = selection_races["id"].astype(int).tolist()
 if (
     "selected_race_id" not in st.session_state
-    or st.session_state["selected_race_id"] not in race_labels
+    or st.session_state["selected_race_id"] not in race_ids
 ):
     st.session_state["selected_race_id"] = race_ids[0]
 
@@ -708,35 +809,7 @@ else:
 # ③ レース検索・保存データ
 with st.expander("③ レース検索・データベースの内容", expanded=False):
     st.write("レースを検索し、選択中のレースの出走馬・結果・払戻を確認できます。")
-    search_col, venue_col = st.columns([2, 1])
-    with search_col:
-        keyword = st.text_input(
-            "レース名で検索",
-            placeholder="例：日本ダービー、中山金杯",
-            key="race_search_keyword",
-        )
-    with venue_col:
-        venues = sorted(
-            races["venue"].dropna().astype(str).unique().tolist()
-        )
-        selected_venue = st.selectbox(
-            "競馬場",
-            ["すべて"] + venues,
-            key="race_search_venue",
-        )
-
-    filtered = races.copy()
-    if keyword.strip():
-        filtered = filtered[
-            filtered["race_name"]
-            .fillna("")
-            .astype(str)
-            .str.contains(keyword.strip(), case=False, regex=False)
-        ]
-    if selected_venue != "すべて":
-        filtered = filtered[filtered["venue"].astype(str) == selected_venue]
-
-    st.caption(f"検索結果：{len(filtered):,} レース")
+    filtered = race_filter_controls(races, "race_search")
     display_races = filtered[
         ["race_date", "venue", "race_name", "surface", "distance_m"]
     ].rename(
@@ -758,9 +831,23 @@ with st.expander("③ レース検索・データベースの内容", expanded=F
 
     if not filtered.empty:
         search_ids = [int(value) for value in filtered["id"]]
+        search_labels = {
+            race_id: race_labels[race_id]
+            for race_id in search_ids
+        }
+        if int(selected_race_id) not in search_ids:
+            search_ids.insert(0, int(selected_race_id))
+            search_labels[int(selected_race_id)] = (
+                f"{race_labels[int(selected_race_id)]}（現在の選択）"
+            )
+            st.caption(
+                "現在の予測対象が検索条件外のため、"
+                "選択肢に追加しています。"
+            )
         if (
             "search_race_id" not in st.session_state
             or st.session_state["search_race_id"] not in search_ids
+            or st.session_state["search_race_id"] != int(selected_race_id)
         ):
             st.session_state["search_race_id"] = (
                 int(selected_race_id)
@@ -770,12 +857,8 @@ with st.expander("③ レース検索・データベースの内容", expanded=F
         st.selectbox(
             "検索結果から予測対象を変更",
             options=search_ids,
-            index=(
-                search_ids.index(int(selected_race_id))
-                if int(selected_race_id) in search_ids
-                else 0
-            ),
-            format_func=lambda race_id: race_labels[race_id],
+            index=search_ids.index(int(selected_race_id)),
+            format_func=lambda race_id: search_labels[race_id],
             key="search_race_id",
             on_change=select_race_from_search,
         )
