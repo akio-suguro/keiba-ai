@@ -20,6 +20,18 @@ docker compose up -d --build
 このリポジトリをOneDriveなどの同期フォルダーに置いている場合、接続URLも同期されることがあります。
 接続情報を共有せず、Neonのパスワードを定期的に管理してください。
 
+### Streamlit Community Cloudの設定
+
+Streamlit Community Cloudでは、アプリの **Settings → Secrets** に次のTOMLを登録します。
+接続URLは引用符の中に入力し、GitHubやソースコードには含めないでください。
+
+```toml
+DATABASE_URL = "postgresql://ユーザー名:パスワード@ホスト名/データベース名?sslmode=require"
+```
+
+保存後にアプリを再起動または再デプロイしてください。アプリはSecretsの`DATABASE_URL`
+（または`NEON_DATABASE_URL`）を使ってNeonへ接続します。SQLiteファイルをCloudへアップロードする必要はありません。
+
 ### GitHub Actionsで日次クローラーを実行する
 
 GitHubリポジトリの **Settings → Secrets and variables → Actions** を開き、

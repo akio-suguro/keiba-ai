@@ -109,15 +109,15 @@ def execute(
 def read_sql_query(
     query: str,
     connection: Connection | sqlite3.Connection,
-    parameters: Sequence[Any] | Mapping[str, Any] | None = None,
+    params: Sequence[Any] | Mapping[str, Any] | None = None,
 ) -> pd.DataFrame:
     if isinstance(connection, sqlite3.Connection):
-        return pd.read_sql_query(query, connection, params=parameters)
-    if isinstance(parameters, Mapping):
-        return pd.read_sql_query(text(query), connection, params=dict(parameters))
-    if parameters is None:
+        return pd.read_sql_query(query, connection, params=params)
+    if isinstance(params, Mapping):
+        return pd.read_sql_query(text(query), connection, params=dict(params))
+    if params is None:
         return pd.read_sql_query(text(query), connection)
-    converted, bound = _named_query(query, parameters)
+    converted, bound = _named_query(query, params)
     return pd.read_sql_query(text(converted), connection, params=bound)
 
 

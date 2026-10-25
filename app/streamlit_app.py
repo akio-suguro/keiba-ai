@@ -7,6 +7,7 @@ import joblib
 import numpy as np
 import pandas as pd
 import streamlit as st
+from streamlit.errors import StreamlitSecretNotFoundError
 from sqlalchemy.exc import SQLAlchemyError
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -28,6 +29,26 @@ st.set_page_config(
     page_icon="🏇",
     layout="wide",
 )
+
+
+def configure_database_url() -> None:
+    """Load the database URL from Streamlit Cloud secrets when available."""
+    if os.environ.get("DATABASE_URL", "").strip():
+        return
+
+    try:
+        database_url = (
+            st.secrets.get("DATABASE_URL")
+            or st.secrets.get("NEON_DATABASE_URL")
+        )
+    except StreamlitSecretNotFoundError:
+        return
+
+    if isinstance(database_url, str) and database_url.strip():
+        os.environ["DATABASE_URL"] = database_url.strip()
+
+
+configure_database_url()
 
 DB_PATH = PROJECT_ROOT / "data" / "keiba.db"
 MODEL_PATH = PROJECT_ROOT / "data" / "model" / "top3_model.joblib"
@@ -629,7 +650,9 @@ st.caption(
 
 if not os.environ.get("DATABASE_URL", "").strip() and not DB_PATH.exists():
     st.error(f"データベースが見つかりません: {DB_PATH}")
-    st.info("Docker Compose の data ボリューム設定を確認してください。")
+    st.info(
+        "Streamlit Cloudではアプリ設定のSecretsにDATABASE_URLを設定してください。"
+    )
     st.stop()
 
 try:
