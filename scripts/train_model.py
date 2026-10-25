@@ -50,8 +50,9 @@ else:
     )
 
 
-DB_PATH = Path("/app/data/keiba.db")
-OUTPUT_DIR = Path("/app/data/model")
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DB_PATH = PROJECT_ROOT / "data" / "keiba.db"
+OUTPUT_DIR = PROJECT_ROOT / "data" / "model"
 
 RANDOM_STATE = 42
 

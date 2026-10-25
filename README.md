@@ -1,47 +1,30 @@
 # keiba-ai
 
-## データベースの設定
+競馬レース情報を収集し、上位3頭と波乱を予測するStreamlitアプリです。
 
-アプリとJRAクローラーは、標準ではローカルのSQLiteを使用します。
-PostgreSQLを使う場合は、`DATABASE_URL`に接続URLを設定してください。
-接続URLは環境変数からのみ読み込み、リポジトリにコミットしないでください。
+## 起動
 
-### 移行後の設定
-
-SQLiteからNeonへの初回データ移行は完了しています。一度限りの移行スクリプトは削除済みです。
-アプリをNeonに接続するには、リポジトリ直下の`.env`に`DATABASE_URL`を設定して、
-次のコマンドで起動します。
+Neonを使う場合は、`.env`に`DATABASE_URL`を設定して起動します。
 
 ```powershell
 docker compose up -d --build
 ```
 
-アプリは`http://localhost:8501`で開けます。`.env`はGitの追跡対象外ですが、
-このリポジトリをOneDriveなどの同期フォルダーに置いている場合、接続URLも同期されることがあります。
-接続情報を共有せず、Neonのパスワードを定期的に管理してください。
+アプリ: http://localhost:8501
 
-### Streamlit Community Cloudの設定
+## Streamlit Community Cloud
 
-Streamlit Community Cloudでは、アプリの **Settings → Secrets** に次のTOMLを登録します。
-接続URLは引用符の中に入力し、GitHubやソースコードには含めないでください。
+アプリの **Settings → Secrets** に以下を設定し、再起動または再デプロイします。
 
 ```toml
-DATABASE_URL = "postgresql://ユーザー名:パスワード@ホスト名/データベース名?sslmode=require"
+DATABASE_URL = "Neonの接続URL"
 ```
 
-保存後にアプリを再起動または再デプロイしてください。アプリはSecretsの`DATABASE_URL`
-（または`NEON_DATABASE_URL`）を使ってNeonへ接続します。SQLiteファイルをCloudへアップロードする必要はありません。
+## 週次自動更新
 
-### GitHub Actionsで日次クローラーを実行する
+GitHubリポジトリの **Settings → Secrets and variables → Actions** に
+`NEON_DATABASE_URL`を登録してください。毎週土曜日の日本時間午前9時ごろに
+クローラーと2種類の学習モデルを実行し、更新したモデルをリポジトリへpushします。
+実行状況は **Actions → Weekly Keiba Update** で確認できます。
 
-GitHubリポジトリの **Settings → Secrets and variables → Actions** を開き、
-**New repository secret** を選択します。名前を`NEON_DATABASE_URL`、
-値をNeonの新しい接続URLにして保存してください。接続URLをリポジトリやチャットに記載しないでください。
-
-設定後、**Actions → Daily Keiba Update → Run workflow** から手動実行して成功することを確認します。
-以後は毎日日本時間の午前0時30分ごろに、GitHub ActionsがNeonへ直接接続してクローラーを実行します。
-PCを起動しておく必要はありません。Secretが未設定の場合はワークフローが早い段階で失敗します。
-GitHub ActionsはDBファイルをリポジトリにコミットしません。
-
-ローカルアプリでは、`.env`の`DATABASE_URL`が設定されていればNeonを使用します。
-未設定の場合、ComposeとPythonスクリプトはローカルSQLiteを使用します。
+接続URLやパスワードはGitやチャットに記載しないでください。

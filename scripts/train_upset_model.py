@@ -52,10 +52,11 @@ else:
 # ============================================================
 
 # Local SQLite fallback path; DATABASE_URL selects PostgreSQL.
-DB_PATH = Path("/app/data/keiba.db")
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DB_PATH = PROJECT_ROOT / "data" / "keiba.db"
 
 # 学習結果の保存先
-OUTPUT_DIR = Path("/app/data/model/upset")
+OUTPUT_DIR = PROJECT_ROOT / "data" / "model" / "upset"
 
 # 時系列分割
 TRAIN_START = "2002-01-01"
