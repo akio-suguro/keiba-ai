@@ -1,7 +1,8 @@
-from pathlib import Path
+from html import escape
 import json
 import os
 import sys
+from pathlib import Path
 
 import joblib
 import numpy as np
@@ -561,29 +562,34 @@ st.markdown(
     <style>
     [data-testid="stMainBlockContainer"] {
       max-width: 1440px;
-      padding-top: 1.25rem;
-      padding-bottom: 1.5rem;
+      padding-top: 3.25rem;
+      padding-bottom: 0.75rem;
+    }
+    [data-testid="stHeading"] {
+      overflow: visible;
     }
     h1 {
       font-size: clamp(1.5rem, 2.2vw, 2rem) !important;
-      line-height: 1.2 !important;
-      margin-bottom: 0.25rem !important;
+      line-height: 1.3 !important;
+      padding-top: 0 !important;
+      margin-top: 0 !important;
+      margin-bottom: 0 !important;
     }
     h2 {
       font-size: 1.3rem !important;
       line-height: 1.25 !important;
-      margin-top: 1rem !important;
-      margin-bottom: 0.35rem !important;
+      margin-top: 0.7rem !important;
+      margin-bottom: 0.2rem !important;
     }
     h3 {
       font-size: 1.05rem !important;
       line-height: 1.3 !important;
     }
     [data-testid="stVerticalBlock"] {
-      gap: 0.75rem;
+      gap: 0.45rem;
     }
     [data-testid="stMetric"] {
-      padding: 0.45rem 0.6rem;
+      padding: 0.3rem 0.45rem;
     }
     [data-testid="stMetricLabel"] {
       font-size: 0.82rem;
@@ -594,13 +600,25 @@ st.markdown(
     [data-testid="stExpander"] summary p {
       font-size: 0.95rem;
     }
+    .jockey-name {
+      color: #111 !important;
+      font-weight: 600;
+      line-height: 1.25;
+      margin: 0.15rem 0 0 !important;
+    }
     @media (max-width: 700px) {
       [data-testid="stMainBlockContainer"] {
-        padding: 0.65rem 0.7rem 1rem;
+        padding: 3.25rem 0.55rem 0.6rem;
       }
       [data-testid="stHorizontalBlock"] {
         flex-wrap: wrap;
-        gap: 0.4rem;
+        gap: 0.25rem;
+      }
+      [data-testid="stHorizontalBlock"]:has(
+        > [data-testid="stColumn"]:nth-child(3):last-child
+      ) > [data-testid="stColumn"] {
+        width: calc(33.33% - 0.17rem) !important;
+        flex: 1 1 calc(33.33% - 0.17rem) !important;
       }
       [data-testid="stColumn"] {
         box-sizing: border-box;
@@ -609,28 +627,32 @@ st.markdown(
         min-width: 0 !important;
       }
       h1 {
-        font-size: 1.35rem !important;
+        font-size: 1.4rem !important;
+        line-height: 1.3 !important;
       }
       h2 {
         font-size: 1.1rem !important;
-        margin-top: 0.75rem !important;
+        margin-top: 0.55rem !important;
       }
       h3 {
         font-size: 0.98rem !important;
       }
+      [data-testid="stVerticalBlock"] {
+        gap: 0.3rem;
+      }
       [data-testid="stMarkdownContainer"] p {
-        font-size: 0.88rem;
-        line-height: 1.45;
+        font-size: 0.84rem;
+        line-height: 1.3;
       }
       [data-testid="stCaptionContainer"] {
-        font-size: 0.75rem;
-        line-height: 1.4;
+        font-size: 0.7rem;
+        line-height: 1.25;
       }
       [data-testid="stMetric"] {
-        padding: 0.35rem 0.45rem;
+        padding: 0.25rem 0.35rem;
       }
       [data-testid="stMetricValue"] {
-        font-size: 1.05rem;
+        font-size: 0.98rem;
       }
       [data-testid="stSelectbox"] label,
       [data-testid="stTextInput"] label {
@@ -643,10 +665,6 @@ st.markdown(
 )
 
 st.title("🏇 競馬予測ラボ")
-st.caption(
-    "データベースに登録されたレースを選び、着順と波乱の予測を確認できます。"
-    "予測は参考情報であり、的中や利益を保証するものではありません。"
-)
 
 if not os.environ.get("DATABASE_URL", "").strip() and not DB_PATH.exists():
     st.error(f"データベースが見つかりません: {DB_PATH}")
@@ -748,6 +766,7 @@ else:
     st.dataframe(
         entry_display[entry_columns],
         width="stretch",
+        height=280,
         hide_index=True,
     )
 
@@ -768,10 +787,6 @@ else:
         if prediction.empty:
             st.info("予測対象の出走馬がありません。")
         else:
-            st.caption(
-                "3着以内クラスの予測スコア順です。"
-                "1着・2着・3着を個別に予測するモデルではありません。"
-            )
             top3 = prediction.head(3)
             top_columns = st.columns(len(top3))
             for rank, (_, horse) in enumerate(top3.iterrows(), start=1):
@@ -781,7 +796,11 @@ else:
                         f"{horse['予測スコア']:.1f} 点",
                         f"馬番 {horse['馬番']}",
                     )
-                    st.caption(f"騎手：{display_value(horse['騎手'])}")
+                    jockey = escape(str(display_value(horse["騎手"])))
+                    st.markdown(
+                        f'<p class="jockey-name">騎手：{jockey}</p>',
+                        unsafe_allow_html=True,
+                    )
     except (FileNotFoundError, ValueError, KeyError, TypeError) as exc:
         st.error(f"上位3頭の予測に失敗しました: {exc}")
     except Exception as exc:
@@ -790,10 +809,6 @@ else:
 
 # ② 波乱予想
 st.header("② このレースは荒れる？")
-st.caption(
-    "波乱の定義：7番人気以下の馬が3着以内に入るレース。"
-    "現在のレースの人気・オッズは、ラベルとの情報漏洩を避けるため予測に使いません。"
-)
 if not UPSET_MODEL_PATH.exists():
     st.error(f"波乱予測モデルが見つかりません: {UPSET_MODEL_PATH}")
 elif horses.empty:
@@ -814,20 +829,12 @@ else:
             "モデル判定",
             "荒れる予想" if is_upset else "荒れにくい予想",
         )
-        st.caption(
-            f"判定基準：{upset_threshold:.1%}。"
-            "確率はモデルの推定値で、校正済みの的中確率ではありません。"
-        )
         if factors:
             st.markdown("**予測に影響した特徴量**")
             st.dataframe(
                 pd.DataFrame(factors),
                 width="stretch",
                 hide_index=True,
-            )
-            st.caption(
-                "寄与度はモデル内部の log-odds への影響であり、"
-                "因果関係や確実な理由を示すものではありません。"
             )
         else:
             st.info("この判定を押し上げる／押し下げる特徴量は特定できませんでした。")
@@ -855,6 +862,7 @@ with st.expander("③ レース検索・データベースの内容", expanded=F
     st.dataframe(
         display_races.head(100),
         width="stretch",
+        height=280,
         hide_index=True,
     )
     if len(display_races) > 100:
@@ -934,6 +942,7 @@ with st.expander("③ レース検索・データベースの内容", expanded=F
     st.dataframe(
         horse_display[horse_columns],
         width="stretch",
+        height=280,
         hide_index=True,
     )
 
