@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from pathlib import Path
 
 import joblib
 import pandas as pd
 import sklearn
+from sqlalchemy.engine import Connection
 from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import HistGradientBoostingClassifier
 from sklearn.impute import SimpleImputer
@@ -32,6 +34,19 @@ else:
         HISTORICAL_FEATURE_COLUMNS,
         add_historical_performance_features,
         add_sex_age_features,
+    )
+
+if __package__:
+    from .database import (
+        connect_db,
+        read_sql_query,
+        table_columns,
+    )
+else:
+    from database import (
+        connect_db,
+        read_sql_query,
+        table_columns,
     )
 
 
@@ -73,21 +88,24 @@ HORSE_FEATURES = (
 
 
 def _table_columns(
-    conn: sqlite3.Connection,
+    conn: Connection | sqlite3.Connection,
     table: str,
 ) -> set[str]:
-    return {
-        row[1]
-        for row in conn.execute(f'PRAGMA table_info("{table}")')
-    }
+    return table_columns(conn, table)
+
+
+def _connect_database() -> Connection | sqlite3.Connection:
+    if os.environ.get("DATABASE_URL", "").strip():
+        return connect_db()
+    return sqlite3.connect(DB_PATH)
 
 
 def load_data():
     """Load race entries and use only information available before the start."""
-    if not DB_PATH.exists():
+    if not os.environ.get("DATABASE_URL", "").strip() and not DB_PATH.exists():
         raise FileNotFoundError(f"DBが見つかりません: {DB_PATH}")
 
-    with sqlite3.connect(DB_PATH) as conn:
+    with _connect_database() as conn:
         race_columns = _table_columns(conn, "races")
         horse_columns = _table_columns(conn, "horses")
         required_races = {"id", "race_date"}
@@ -128,7 +146,7 @@ def load_data():
             WHERE h.finish IS NOT NULL
               AND r.race_date IS NOT NULL
         """
-        df = pd.read_sql_query(query, conn)
+        df = read_sql_query(query, conn)
 
     if df.empty:
         raise ValueError("学習対象のデータがありません。")

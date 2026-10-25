@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -40,12 +41,17 @@ else:
         add_sex_age_features,
     )
 
+if __package__:
+    from .database import connect_db, read_sql_query
+else:
+    from database import connect_db, read_sql_query
+
 
 # ============================================================
 # 設定
 # ============================================================
 
-# Docker コンテナ内の SQLite DB
+# Local SQLite fallback path; DATABASE_URL selects PostgreSQL.
 DB_PATH = Path("/app/data/keiba.db")
 
 # 学習結果の保存先
@@ -71,21 +77,27 @@ RANDOM_STATE = 42
 # DB 読み込み
 # ============================================================
 
-def load_database() -> tuple[pd.DataFrame, pd.DataFrame]:
-    """SQLite DB からレースと出走馬のデータを読み込む。"""
+def _connect_database():
+    if os.environ.get("DATABASE_URL", "").strip():
+        return connect_db()
+    return sqlite3.connect(DB_PATH)
 
-    if not DB_PATH.exists():
+
+def load_database() -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Configured databaseからレースと出走馬のデータを読み込む。"""
+
+    if not os.environ.get("DATABASE_URL", "").strip() and not DB_PATH.exists():
         raise FileNotFoundError(
             f"DB が見つかりません: {DB_PATH}\n"
             "Docker Compose の volume 設定を確認してください。"
         )
 
-    with sqlite3.connect(DB_PATH) as conn:
-        races = pd.read_sql_query(
+    with _connect_database() as conn:
+        races = read_sql_query(
             "SELECT * FROM races",
             conn,
         )
-        horses = pd.read_sql_query(
+        horses = read_sql_query(
             "SELECT * FROM horses",
             conn,
         )

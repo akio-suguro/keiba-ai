@@ -1,12 +1,13 @@
 from pathlib import Path
 import json
-import sqlite3
+import os
 import sys
 
 import joblib
 import numpy as np
 import pandas as pd
 import streamlit as st
+from sqlalchemy.exc import SQLAlchemyError
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -14,6 +15,12 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from scripts.model_features import make_prediction_feature_rows
 from scripts.train_upset_model import add_race_features
+from scripts.database import (
+    connect_db as open_database,
+    execute as db_execute,
+    read_sql_query,
+    table_columns,
+)
 
 
 st.set_page_config(
@@ -36,10 +43,7 @@ UPSET_METRICS_PATH = (
 def load_races():
     """レース一覧を取得する。"""
     with get_connection() as conn:
-        columns = {
-            row[1]
-            for row in conn.execute('PRAGMA table_info("races")')
-        }
+        columns = table_columns(conn, "races")
         optional = (
             "race_number",
             "start_time",
@@ -55,7 +59,7 @@ def load_races():
             else f'NULL AS "{column}"'
             for column in optional
         )
-        return pd.read_sql_query(
+        return read_sql_query(
             f"""
             SELECT
                 id, url, race_date, venue, race_name, distance_m,
@@ -68,22 +72,17 @@ def load_races():
 
 
 def get_connection():
-    """SQLite接続を作成する。"""
-    if not DB_PATH.exists():
+    """PostgreSQLまたはローカルSQLiteへの接続を作成する。"""
+    if not os.environ.get("DATABASE_URL", "").strip() and not DB_PATH.exists():
         raise FileNotFoundError(f"データベースが見つかりません: {DB_PATH}")
-    conn = sqlite3.connect(str(DB_PATH), timeout=10)
-    conn.row_factory = sqlite3.Row
-    return conn
+    return open_database()
 
 
 @st.cache_data(ttl=30)
 def load_horses(race_id):
     """指定レースの出走馬・結果を取得する。"""
     with get_connection() as conn:
-        columns = {
-            row[1]
-            for row in conn.execute('PRAGMA table_info("horses")')
-        }
+        columns = table_columns(conn, "horses")
         optional = ("horse_mark", "source_fields")
         extra_columns = ", ".join(
             f'"{column}"'
@@ -91,14 +90,14 @@ def load_horses(race_id):
             else f'NULL AS "{column}"'
             for column in optional
         )
-        return pd.read_sql_query(
+        return read_sql_query(
             f"""
             SELECT
                 finish, frame, horse_number, horse_name, sex_age, weight,
                 jockey, time, margin, last_3f, body_weight, weight_change,
                 trainer, popularity, odds, {extra_columns}
             FROM horses
-            WHERE race_id = ?
+            WHERE race_id = :race_id
             ORDER BY
                 CASE
                     WHEN finish IS NULL
@@ -110,7 +109,7 @@ def load_horses(race_id):
                 horse_number
             """,
             conn,
-            params=(int(race_id),),
+            params={"race_id": int(race_id)},
         )
 
 
@@ -118,7 +117,7 @@ def load_horses(race_id):
 def load_historical_horses():
     """日付をまたいだ過去成績の特徴量作成用データを取得する。"""
     with get_connection() as conn:
-        return pd.read_sql_query(
+        return read_sql_query(
             """
             SELECT
                 h.race_id, r.race_date, h.finish, h.horse_name,
@@ -135,8 +134,8 @@ def load_historical_horses():
 def load_upset_feature_rows():
     """波乱モデルの学習時と同じ方法で、全レースの特徴量を作る。"""
     with get_connection() as conn:
-        races = pd.read_sql_query("SELECT * FROM races", conn)
-        horses = pd.read_sql_query("SELECT * FROM horses", conn)
+        races = read_sql_query("SELECT * FROM races", conn)
+        horses = read_sql_query("SELECT * FROM horses", conn)
 
     if races.empty or horses.empty:
         return pd.DataFrame()
@@ -159,24 +158,33 @@ def load_upset_feature_rows():
 def load_payouts(race_id):
     """指定レースの払戻情報を取得する。"""
     with get_connection() as conn:
-        return pd.read_sql_query(
+        return read_sql_query(
             """
             SELECT bet_type, combination, amount
             FROM payouts
-            WHERE race_id = ?
+            WHERE race_id = :race_id
             ORDER BY id
             """,
             conn,
-            params=(int(race_id),),
+            params={"race_id": int(race_id)},
         )
 
 
 def get_database_counts():
     """DBの登録件数を取得する。"""
     with get_connection() as conn:
-        race_count = conn.execute("SELECT COUNT(*) FROM races").fetchone()[0]
-        horse_count = conn.execute("SELECT COUNT(*) FROM horses").fetchone()[0]
-        payout_count = conn.execute("SELECT COUNT(*) FROM payouts").fetchone()[0]
+        race_count = db_execute(
+            conn,
+            "SELECT COUNT(*) FROM races",
+        ).scalar_one()
+        horse_count = db_execute(
+            conn,
+            "SELECT COUNT(*) FROM horses",
+        ).scalar_one()
+        payout_count = db_execute(
+            conn,
+            "SELECT COUNT(*) FROM payouts",
+        ).scalar_one()
     return race_count, horse_count, payout_count
 
 
@@ -619,14 +627,14 @@ st.caption(
     "予測は参考情報であり、的中や利益を保証するものではありません。"
 )
 
-if not DB_PATH.exists():
+if not os.environ.get("DATABASE_URL", "").strip() and not DB_PATH.exists():
     st.error(f"データベースが見つかりません: {DB_PATH}")
     st.info("Docker Compose の data ボリューム設定を確認してください。")
     st.stop()
 
 try:
     races = load_races()
-except (sqlite3.Error, pd.errors.DatabaseError) as exc:
+except (SQLAlchemyError, pd.errors.DatabaseError) as exc:
     st.error(f"データベースの読み込みに失敗しました: {exc}")
     st.stop()
 
@@ -676,7 +684,7 @@ basic3.metric(
 
 try:
     horses = load_horses(selected_race_id)
-except (sqlite3.Error, pd.errors.DatabaseError) as exc:
+except (SQLAlchemyError, pd.errors.DatabaseError) as exc:
     st.error(f"出走馬データの取得に失敗しました: {exc}")
     st.stop()
 
@@ -869,7 +877,7 @@ with st.expander("③ レース検索・データベースの内容", expanded=F
         metric1.metric("登録レース数", f"{race_count:,}")
         metric2.metric("出走馬データ数", f"{horse_count:,}")
         metric3.metric("払戻データ数", f"{payout_count:,}")
-    except sqlite3.Error as exc:
+    except SQLAlchemyError as exc:
         st.error(f"データ件数の取得に失敗しました: {exc}")
 
     st.subheader(f"選択中：{race_labels[int(selected_race_id)]}")
@@ -923,7 +931,7 @@ with st.expander("③ レース検索・データベースの内容", expanded=F
                 width="stretch",
                 hide_index=True,
             )
-    except (sqlite3.Error, pd.errors.DatabaseError) as exc:
+    except (SQLAlchemyError, pd.errors.DatabaseError) as exc:
         st.error(f"払戻データの取得に失敗しました: {exc}")
 
 

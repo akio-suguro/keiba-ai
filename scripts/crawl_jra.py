@@ -25,6 +25,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import sqlite3
 import sys
@@ -36,6 +37,28 @@ from urllib.parse import parse_qs, urljoin, urlparse
 
 import requests
 from bs4 import BeautifulSoup
+from sqlalchemy.exc import SQLAlchemyError
+
+if __package__:
+    from .database import (
+        connect_db as open_database,
+        execute as db_execute,
+        initialize_schema,
+        is_postgres,
+        row_value,
+        table_columns,
+        transaction,
+    )
+else:
+    from database import (
+        connect_db as open_database,
+        execute as db_execute,
+        initialize_schema,
+        is_postgres,
+        row_value,
+        table_columns,
+        transaction,
+    )
 
 
 # ============================================================
@@ -324,138 +347,43 @@ def extract_year_race_number(url: str) -> tuple[int, int] | None:
 # DB
 # ============================================================
 
-def connect_db() -> sqlite3.Connection:
+def connect_db():
+    if os.environ.get("DATABASE_URL", "").strip():
+        return open_database()
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
 
 
-def database_size_bytes() -> int:
+def database_size_bytes() -> int | None:
     """SQLite DBファイルの現在サイズをバイト単位で返す。"""
+    if os.environ.get("DATABASE_URL", "").strip():
+        return None
     try:
         return DB_PATH.stat().st_size
     except FileNotFoundError:
         return 0
 
 
-def init_db(conn: sqlite3.Connection) -> None:
-    """
-    テーブルが存在しない新規DBの場合に作成する。
-    既存テーブルの列構成は変更しない。
-    """
-    conn.executescript(
-        """
-        CREATE TABLE IF NOT EXISTS races (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            url TEXT UNIQUE,
-            race_date TEXT,
-            venue TEXT,
-            race_name TEXT,
-            distance_m INTEGER,
-            surface TEXT,
-            direction TEXT,
-            crawled_at TEXT
-        );
-
-        CREATE TABLE IF NOT EXISTS horses (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            race_id INTEGER NOT NULL,
-            finish INTEGER,
-            frame INTEGER,
-            horse_number INTEGER,
-            horse_name TEXT,
-            sex_age TEXT,
-            weight REAL,
-            jockey TEXT,
-            time TEXT,
-            margin TEXT,
-            last_3f REAL,
-            body_weight INTEGER,
-            weight_change INTEGER,
-            trainer TEXT,
-            popularity INTEGER,
-            odds REAL
-        );
-
-        CREATE TABLE IF NOT EXISTS payouts (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            race_id INTEGER NOT NULL,
-            bet_type TEXT,
-            combination TEXT,
-            amount INTEGER
-        );
-
-        CREATE TABLE IF NOT EXISTS crawl_errors (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            url TEXT,
-            error TEXT,
-            occurred_at TEXT
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_races_date
-            ON races(race_date);
-
-        CREATE INDEX IF NOT EXISTS idx_horses_race
-            ON horses(race_id);
-
-        CREATE INDEX IF NOT EXISTS idx_payouts_race
-            ON payouts(race_id);
-        """
-    )
-
-    optional_columns = {
-        "races": {
-            "race_number": "INTEGER",
-            "start_time": "TEXT",
-            "weather": "TEXT",
-            "turf_condition": "TEXT",
-            "dirt_condition": "TEXT",
-            "race_grade": "TEXT",
-            "race_conditions": "TEXT",
-        },
-        "horses": {
-            "horse_mark": "TEXT",
-            "corner_order": "TEXT",
-            "horse_url": "TEXT",
-            "jockey_url": "TEXT",
-            "trainer_url": "TEXT",
-            "source_fields": "TEXT",
-        },
-        "payouts": {
-            "popularity": "INTEGER",
-        },
-    }
-    for table, columns in optional_columns.items():
-        existing_columns = get_table_columns(conn, table)
-        for column, data_type in columns.items():
-            if column not in existing_columns:
-                conn.execute(
-                    f'ALTER TABLE "{table}" '
-                    f'ADD COLUMN "{column}" {data_type}'
-                )
-    conn.commit()
+def init_db(conn) -> None:
+    initialize_schema(conn)
 
 
-def get_table_columns(
-    conn: sqlite3.Connection,
-    table_name: str,
-) -> set[str]:
-    rows = conn.execute(
-        f'PRAGMA table_info("{table_name}")'
-    ).fetchall()
-
-    return {row[1] for row in rows}
+def get_table_columns(conn, table_name: str) -> set[str]:
+    return table_columns(conn, table_name)
 
 
 def save_error(
-    conn: sqlite3.Connection,
+    conn,
     url: str,
     error: Exception,
 ) -> None:
     try:
-        conn.execute(
+        if is_postgres(conn) and conn.in_transaction():
+            conn.rollback()
+        db_execute(
+            conn,
             """
             INSERT INTO crawl_errors (url, error, occurred_at)
             VALUES (?, ?, ?)
@@ -467,8 +395,9 @@ def save_error(
             ),
         )
         conn.commit()
-    except sqlite3.Error:
+    except (sqlite3.Error, SQLAlchemyError) as exc:
         conn.rollback()
+        print(f"[ERROR] クロールエラーの記録に失敗しました: {exc}")
 
 
 # ============================================================
@@ -677,7 +606,7 @@ def race_result_url(cname: str) -> str:
 
 
 def race_result_already_saved(
-    conn: sqlite3.Connection,
+    conn,
     cname: str,
 ) -> bool:
     """出走馬まで保存済みのレースを、再取得せずに判定する。"""
@@ -686,7 +615,8 @@ def race_result_already_saved(
     if "race_number" not in columns:
         return False
 
-    row = conn.execute(
+    row = db_execute(
+        conn,
         """
         SELECT
             r.id,
@@ -712,20 +642,27 @@ def race_result_already_saved(
             details["race_number"],
         ),
     ).fetchone()
+    if row is not None:
+        horse_count = row_value(row, "horse_count")
+        finished_count = row_value(row, "finished_count")
+    else:
+        horse_count = 0
+        finished_count = 0
     return bool(
         row
-        and row["horse_count"] >= 5
-        and row["finished_count"] > 0
+        and horse_count >= 5
+        and finished_count > 0
     )
 
 
 def race_has_results(
-    conn: sqlite3.Connection,
+    conn,
     cname: str,
 ) -> bool:
     """出馬表データで、結果が保存済みのレースを上書きしない。"""
     details = race_cname_details(cname)
-    row = conn.execute(
+    row = db_execute(
+        conn,
         """
         SELECT 1
         FROM races r
@@ -1644,7 +1581,7 @@ def parse_payouts(soup: BeautifulSoup) -> list[dict]:
 # ============================================================
 
 def insert_row(
-    conn: sqlite3.Connection,
+    conn,
     table: str,
     values: dict,
 ) -> int | None:
@@ -1663,16 +1600,17 @@ def insert_row(
     column_sql = ", ".join(f'"{column}"' for column in columns)
     placeholders = ", ".join("?" for _ in columns)
 
-    cursor = conn.execute(
-        f"INSERT INTO {table} ({column_sql}) VALUES ({placeholders})",
+    result = db_execute(
+        conn,
+        f"INSERT INTO {table} ({column_sql}) VALUES ({placeholders})"
+        + (" RETURNING id" if is_postgres(conn) else ""),
         tuple(values[column] for column in columns),
     )
-
-    return cursor.lastrowid
+    return result.scalar_one() if is_postgres(conn) else result.lastrowid
 
 
 def save_race(
-    conn: sqlite3.Connection,
+    conn,
     race: dict,
     horses: list[dict],
     payouts: list[dict],
@@ -1696,6 +1634,8 @@ def save_race(
         )
 
     race_columns = get_table_columns(conn, "races")
+    horse_columns = get_table_columns(conn, "horses")
+    payout_columns = get_table_columns(conn, "payouts")
 
     race_values = {
         "url": race["url"],
@@ -1724,14 +1664,16 @@ def save_race(
         if key in race_columns
     }
 
-    with conn:
-        existing = conn.execute(
+    with transaction(conn):
+        existing = db_execute(
+            conn,
             "SELECT id FROM races WHERE url = ?",
             (race["url"],),
         ).fetchone()
 
         if not existing and race.get("race_number") is not None:
-            existing = conn.execute(
+            existing = db_execute(
+                conn,
                 """
                 SELECT id
                 FROM races
@@ -1752,18 +1694,22 @@ def save_race(
             not existing
             and "/JRADB/accessS.html?CNAME=" in race["url"]
         ):
-            existing = conn.execute(
+            distance_operator = (
+                "IS NOT DISTINCT FROM" if is_postgres(conn) else "IS"
+            )
+            existing = db_execute(
+                conn,
                 """
                 SELECT id
                 FROM races
                 WHERE race_date = ?
                   AND venue = ?
                   AND race_name = ?
-                  AND distance_m IS ?
+                  AND distance_m {distance_operator} ?
                   AND url LIKE '%/datafile/seiseki/replay/%'
                 ORDER BY id
                 LIMIT 1
-                """,
+                """.format(distance_operator=distance_operator),
                 (
                     race["race_date"],
                     race["venue"],
@@ -1773,7 +1719,7 @@ def save_race(
             ).fetchone()
 
         if existing:
-            race_id = existing["id"]
+            race_id = row_value(existing, "id")
 
             update_values = {
                 key: value
@@ -1787,7 +1733,8 @@ def save_race(
                     for column in update_values
                 )
 
-                conn.execute(
+                db_execute(
+                    conn,
                     f"UPDATE races SET {assignments} WHERE id = ?",
                     (*update_values.values(), race_id),
                 )
@@ -1797,10 +1744,9 @@ def save_race(
         if race_id is None:
             raise RuntimeError("レースIDを取得できません")
 
-        horse_columns = get_table_columns(conn, "horses")
-
         # 馬データは検証済みの場合のみ置換
-        conn.execute(
+        db_execute(
+            conn,
             "DELETE FROM horses WHERE race_id = ?",
             (race_id,),
         )
@@ -1845,12 +1791,11 @@ def save_race(
         # 払戻が取得できた場合のみ既存払戻を更新する。
         # 0件の場合は既存データを消さない。
         if payouts:
-            conn.execute(
+            db_execute(
+                conn,
                 "DELETE FROM payouts WHERE race_id = ?",
                 (race_id,),
             )
-
-            payout_columns = get_table_columns(conn, "payouts")
 
             for payout in payouts:
                 values = {
@@ -2003,14 +1948,20 @@ def main(
 
     try:
         init_db(conn)
+        db_size = (
+            database_size_bytes()
+            if enforce_database_size_limit
+            else None
+        )
         size_limit_reached = (
             enforce_database_size_limit
-            and database_size_bytes() >= MAX_DATABASE_SIZE_BYTES
+            and db_size is not None
+            and db_size >= MAX_DATABASE_SIZE_BYTES
         )
         if size_limit_reached:
             print(
                 f"[STOP] DB容量が上限に達しています: "
-                f"{database_size_bytes():,} / "
+                f"{db_size:,} / "
                 f"{MAX_DATABASE_SIZE_BYTES:,} bytes"
             )
             checkdigits = {}
@@ -2164,7 +2115,10 @@ def main(
 
                         if enforce_database_size_limit:
                             db_size = database_size_bytes()
-                            if db_size >= MAX_DATABASE_SIZE_BYTES:
+                            if (
+                                db_size is not None
+                                and db_size >= MAX_DATABASE_SIZE_BYTES
+                            ):
                                 print(
                                     f"[STOP] DB容量が上限に達しました: "
                                     f"{db_size:,} / "
