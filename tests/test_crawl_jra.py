@@ -1,7 +1,7 @@
 import sqlite3
 import tempfile
 import unittest
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import ANY, Mock, patch
 
@@ -24,6 +24,22 @@ class CurrentMonthCrawlerEntrypointTests(unittest.TestCase):
             current_month_only=True,
             enforce_database_size_limit=False,
         )
+
+    def test_crawler_uses_japan_local_date(self):
+        jst_time = datetime(
+            2026,
+            11,
+            1,
+            0,
+            0,
+            tzinfo=crawl_jra.JRA_TIMEZONE,
+        )
+        with patch.object(crawl_jra, "datetime") as datetime_mock:
+            datetime_mock.now.return_value = jst_time
+
+            self.assertEqual(crawl_jra.jra_today(), date(2026, 11, 1))
+
+        datetime_mock.now.assert_called_once_with(crawl_jra.JRA_TIMEZONE)
 
 
 class RaceIndexUrlTests(unittest.TestCase):
@@ -224,32 +240,35 @@ class JraSearchTests(unittest.TestCase):
 
         self.assertEqual(days, [])
 
-    def test_discovers_published_upcoming_cards_in_requested_month(self):
+    def test_discovers_upcoming_cards_across_month_boundary(self):
         top_page = BeautifulSoup(
             """
-            <a onclick="doAction('pw01drl00052026040820261024/BC')">
-              10月24日 東京
+            <a onclick="doAction('pw01drl00052026040920261030/BC')">
+              10月30日 東京
             </a>
-            <a onclick="doAction('pw01drl00052026040920261025/AA')">
-              10月25日 東京
+            <a onclick="doAction('pw01drl00052026041020261031/AA')">
+              10月31日 東京
             </a>
-            <a onclick="doAction('pw01drl00052026041020261101/AA')">
+            <a onclick="doAction('pw01drl00052026041120261101/AA')">
               11月1日 東京
+            </a>
+            <a onclick="doAction('pw01drl00052026041220261108/AA')">
+              11月8日 東京
             </a>
             """,
             "html.parser",
         )
-        saturday = BeautifulSoup(
+        today_page = BeautifulSoup(
             """
-            <a onclick="doAction('pw01dde0105202604080120261024/D9')">
+            <a onclick="doAction('pw01dde0105202604100120261031/D9')">
               1R
             </a>
             """,
             "html.parser",
         )
-        sunday = BeautifulSoup(
+        tomorrow_page = BeautifulSoup(
             """
-            <a onclick="doAction('pw01dde0105202604090120261025/AA')">
+            <a onclick="doAction('pw01dde0105202604110120261101/AA')">
               1R
             </a>
             """,
@@ -258,19 +277,17 @@ class JraSearchTests(unittest.TestCase):
         with patch.object(
             crawl_jra,
             "fetch_jra_card_page",
-            side_effect=[top_page, saturday, sunday],
+            side_effect=[top_page, today_page, tomorrow_page],
         ) as fetch_page:
             cnames = crawl_jra.discover_upcoming_race_cnames(
-                2026,
-                10,
-                today=date(2026, 10, 23),
+                today=date(2026, 10, 31),
             )
 
         self.assertEqual(
             cnames,
             [
-                "pw01dde0105202604080120261024/D9",
-                "pw01dde0105202604090120261025/AA",
+                "pw01dde0105202604100120261031/D9",
+                "pw01dde0105202604110120261101/AA",
             ],
         )
         fetch_page.assert_any_call(crawl_jra.JRA_CARD_INDEX_CNAME)
@@ -636,17 +653,11 @@ class MainCrawlerTests(unittest.TestCase):
 
         self.assertEqual(result, 0)
         self.assertEqual(scanned_months, [(today.year, today.month)])
-        discover_entries.assert_called_once_with(
-            today.year,
-            today.month,
-            today=today,
-        )
+        discover_entries.assert_called_once_with(today=today)
 
     def test_current_month_crawls_published_future_entries(self):
         today = date.today()
         future_date = today + timedelta(days=1)
-        if future_date.month != today.month:
-            future_date = today
         entry_cname = (
             f"pw01dde0105{today.year}010101"
             f"{future_date:%Y%m%d}/D9"

@@ -31,9 +31,10 @@ import sqlite3
 import sys
 import time
 import unicodedata
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from urllib.parse import parse_qs, urljoin, urlparse
+from zoneinfo import ZoneInfo
 
 import requests
 from bs4 import BeautifulSoup
@@ -72,7 +73,8 @@ JRA_CHECKDIGIT_CNAME = "pw01skl00999999/B3"
 JRA_CARD_INDEX_CNAME = "pw01dli00/F3"
 
 START_YEAR = 2002
-CURRENT_YEAR = datetime.now().year
+JRA_TIMEZONE = ZoneInfo("Asia/Tokyo")
+CURRENT_YEAR = datetime.now(JRA_TIMEZONE).year
 YEARS = list(range(CURRENT_YEAR, START_YEAR - 1, -1))
 
 DB_PATH = Path("data/keiba.db")
@@ -159,6 +161,10 @@ def normalize_text(value: str | None) -> str:
     value = value.replace("\xa0", " ")
     value = value.replace("\u3000", " ")
     return re.sub(r"\s+", " ", value).strip()
+
+
+def jra_today() -> date:
+    return datetime.now(JRA_TIMEZONE).date()
 
 
 def normalize_header(value: str) -> str:
@@ -455,12 +461,11 @@ def extract_cnames(soup: BeautifulSoup, prefix: str) -> list[str]:
 
 
 def discover_upcoming_race_cnames(
-    year: int,
-    month: int,
     today=None,
 ) -> list[str]:
-    """出馬表トップから、当月かつ本日以降に開催するレースを取得する。"""
-    current_date = today or datetime.now().date()
+    """出馬表トップから、今日から7日以内に開催するレースを取得する。"""
+    current_date = today or jra_today()
+    last_date = current_date + timedelta(days=7)
     soup = fetch_jra_card_page(JRA_CARD_INDEX_CNAME)
     race_cnames = []
 
@@ -469,11 +474,7 @@ def discover_upcoming_race_cnames(
             extract_cname_race_date(race_day_cname),
             "%Y-%m-%d",
         ).date()
-        if (
-            race_date.year != year
-            or race_date.month != month
-            or race_date < current_date
-        ):
+        if race_date < current_date or race_date > last_date:
             continue
 
         day_soup = fetch_jra_card_page(race_day_cname)
@@ -553,7 +554,7 @@ def discover_race_days(
         raise ValueError(f"JRA検索のチェック文字列がありません: {yymm}")
 
     month_cname = f"pw01skl10{year}{month:02d}/{checkdigit}"
-    current_date = today or datetime.now().date()
+    current_date = today or jra_today()
     try:
         soup = fetch_jra_search_page(month_cname)
     except JraParameterError:
@@ -848,7 +849,7 @@ def extract_race_info(
         if match:
             year, month, day = map(int, match.groups())
 
-            if 2000 <= year <= datetime.now().year + 1:
+            if 2000 <= year <= datetime.now(JRA_TIMEZONE).year + 1:
                 info["race_date"] = (
                     f"{year:04d}-{month:02d}-{day:02d}"
                 )
@@ -1974,7 +1975,7 @@ def main(
                 checkdigits = {}
                 total_error += 1
 
-        today = datetime.now().date()
+        today = jra_today()
         years = [today.year] if current_month_only else YEARS
         for year in (years if checkdigits else []):
             if size_limit_reached:
@@ -2129,8 +2130,6 @@ def main(
         if current_month_only and not size_limit_reached:
             try:
                 entry_cnames = discover_upcoming_race_cnames(
-                    today.year,
-                    today.month,
                     today=today,
                 )
             except Exception as exc:
@@ -2153,9 +2152,8 @@ def main(
                             "%Y-%m-%d",
                         ).date()
                         if (
-                            race_date.year != today.year
-                            or race_date.month != today.month
-                            or race_date < today
+                            race_date < today
+                            or race_date > today + timedelta(days=7)
                         ):
                             total_skipped += 1
                             continue
@@ -2205,7 +2203,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--current-month-only",
         action="store_true",
-        help="crawl current-month results and published upcoming race entries",
+        help="crawl current-month results and race entries for the next 7 days",
     )
     args = parser.parse_args()
     sys.exit(main(current_month_only=args.current_month_only))

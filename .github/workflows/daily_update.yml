@@ -2,7 +2,7 @@ name: Weekly Keiba Update
 
 on:
   schedule:
-    - cron: "0 0 * * 6"
+    - cron: "5 23 * * 5"
   workflow_dispatch:
 
 permissions:
@@ -40,7 +40,7 @@ jobs:
             exit 1
           fi
 
-      - name: Crawl current-month race results and upcoming entries
+      - name: Crawl recent results and upcoming race entries
         env:
           DATABASE_URL: ${{ secrets.NEON_DATABASE_URL }}
         run: python scripts/crawl_jra.py --current-month-only
