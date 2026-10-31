@@ -2,8 +2,8 @@
   "model": "HistGradientBoostingClassifier",
   "target": "finish <= 3",
   "sklearn_version": "1.9.1",
-  "test_horses": 18869,
-  "test_races": 1433,
+  "test_horses": 18889,
+  "test_races": 1435,
   "test_start_date": "2026-05-31",
   "test_end_date": "2026-10-31",
   "features": [
@@ -39,68 +39,68 @@
     "trainer_prior_win_rate",
     "trainer_prior_top3_rate"
   ],
-  "positive_rate_test": 0.22783401346123272,
-  "accuracy_at_0_5": 0.8012613281042981,
-  "precision_at_0_5": 0.6187797490263955,
-  "recall_at_0_5": 0.3326354966271226,
+  "positive_rate_test": 0.22791042405632908,
+  "accuracy_at_0_5": 0.8012599925882788,
+  "precision_at_0_5": 0.6190064794816414,
+  "recall_at_0_5": 0.33286875725900117,
   "classification_report_at_0_5": {
     "4着以下": {
-      "precision": 0.8267302814349559,
-      "recall": 0.9395332875772134,
-      "f1-score": 0.8795296838858905,
-      "support": 14570.0
+      "precision": 0.8267165439845541,
+      "recall": 0.939522764673615,
+      "f1-score": 0.8795172989280442,
+      "support": 14584.0
     },
     "3着以内": {
-      "precision": 0.6187797490263955,
-      "recall": 0.3326354966271226,
-      "f1-score": 0.43267776096822996,
-      "support": 4299.0
+      "precision": 0.6190064794816414,
+      "recall": 0.33286875725900117,
+      "f1-score": 0.43293051359516616,
+      "support": 4305.0
     },
-    "accuracy": 0.8012613281042981,
+    "accuracy": 0.8012599925882788,
     "macro avg": {
-      "precision": 0.7227550152306756,
-      "recall": 0.636084392102168,
-      "f1-score": 0.6561037224270603,
-      "support": 18869.0
+      "precision": 0.7228615117330978,
+      "recall": 0.636195760966308,
+      "f1-score": 0.6562239062616052,
+      "support": 18889.0
     },
     "weighted avg": {
-      "precision": 0.7793520770349134,
-      "recall": 0.8012613281042981,
-      "f1-score": 0.7777216168646905,
-      "support": 18869.0
+      "precision": 0.7793772551029278,
+      "recall": 0.8012599925882788,
+      "f1-score": 0.7777355153048752,
+      "support": 18889.0
     }
   },
-  "roc_auc": 0.8011109509274394,
-  "average_precision": 0.5345325396058485,
+  "roc_auc": 0.8011338058094946,
+  "average_precision": 0.5347919285059015,
   "race_level_top3": {
-    "races": 1433,
+    "races": 1435,
     "excluded_races": 0,
-    "mean_correct_picks": 1.5882763433356595,
-    "precision_at_3": 0.5294254477785532,
-    "recall_at_3": 0.5294254477785532,
-    "race_with_any_top3_hit_rate": 0.9323098394975575,
-    "winner_hit_rate": 0.6727145847871598,
-    "exact_top3_set_rate": 0.0928122819260293
+    "mean_correct_picks": 1.5881533101045295,
+    "precision_at_3": 0.5293844367015099,
+    "recall_at_3": 0.5293844367015099,
+    "race_with_any_top3_hit_rate": 0.932404181184669,
+    "winner_hit_rate": 0.6724738675958188,
+    "exact_top3_set_rate": 0.09268292682926829
   },
   "race_level_top3_on_market_coverage": {
-    "races": 1369,
+    "races": 1371,
     "excluded_races": 0,
-    "mean_correct_picks": 1.5807158509861212,
-    "precision_at_3": 0.5269052836620404,
-    "recall_at_3": 0.5269052836620404,
-    "race_with_any_top3_hit_rate": 0.9306062819576333,
-    "winner_hit_rate": 0.6669101533966398,
-    "exact_top3_set_rate": 0.08984660336011688
+    "mean_correct_picks": 1.5805981035740335,
+    "precision_at_3": 0.5268660345246778,
+    "recall_at_3": 0.5268660345246778,
+    "race_with_any_top3_hit_rate": 0.9307075127644056,
+    "winner_hit_rate": 0.6666666666666666,
+    "exact_top3_set_rate": 0.08971553610503283
   },
   "popularity_baseline": {
-    "races": 1369,
+    "races": 1371,
     "excluded_races": 0,
-    "mean_correct_picks": 1.5821767713659605,
-    "precision_at_3": 0.5273922571219869,
-    "recall_at_3": 0.5273922571219869,
-    "race_with_any_top3_hit_rate": 0.9306062819576333,
-    "winner_hit_rate": 0.6683710737764792,
-    "exact_top3_set_rate": 0.08984660336011688,
+    "mean_correct_picks": 1.5820568927789935,
+    "precision_at_3": 0.5273522975929978,
+    "recall_at_3": 0.5273522975929978,
+    "race_with_any_top3_hit_rate": 0.9307075127644056,
+    "winner_hit_rate": 0.6681254558716265,
+    "exact_top3_set_rate": 0.08971553610503283,
     "excluded_incomplete_market_races": 64
   },
   "validation": {
