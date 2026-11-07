@@ -2,7 +2,8 @@ name: Weekly Keiba Update
 
 on:
   schedule:
-    - cron: "5 23 * * 5"
+    - cron: "17 23 * * 5"
+    - cron: "17 1 * * 6"
   workflow_dispatch:
 
 permissions:
@@ -40,22 +41,32 @@ jobs:
             exit 1
           fi
 
+      - name: Check weekly update status
+        id: weekly-update
+        env:
+          DATABASE_URL: ${{ secrets.NEON_DATABASE_URL }}
+        run: python scripts/weekly_update_state.py check
+
       - name: Crawl recent results and upcoming race entries
+        if: steps.weekly-update.outputs.run == 'true'
         env:
           DATABASE_URL: ${{ secrets.NEON_DATABASE_URL }}
         run: python scripts/crawl_jra.py --current-month-only
 
       - name: Train top-three prediction model
+        if: steps.weekly-update.outputs.run == 'true'
         env:
           DATABASE_URL: ${{ secrets.NEON_DATABASE_URL }}
         run: python scripts/train_model.py
 
       - name: Train upset prediction model
+        if: steps.weekly-update.outputs.run == 'true'
         env:
           DATABASE_URL: ${{ secrets.NEON_DATABASE_URL }}
         run: python scripts/train_upset_model.py
 
       - name: Publish updated models to the repository
+        if: steps.weekly-update.outputs.run == 'true'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -68,3 +79,9 @@ jobs:
             git commit -m "Update weekly prediction models"
             git push
           fi
+
+      - name: Mark weekly update complete
+        if: steps.weekly-update.outputs.run == 'true'
+        env:
+          DATABASE_URL: ${{ secrets.NEON_DATABASE_URL }}
+        run: python scripts/weekly_update_state.py complete

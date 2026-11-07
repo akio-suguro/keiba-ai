@@ -23,9 +23,9 @@ DATABASE_URL = "Neonの接続URL"
 ## 週次自動更新
 
 GitHubリポジトリの **Settings → Secrets and variables → Actions** に
-`NEON_DATABASE_URL`を登録してください。毎週土曜日の日本時間午前8時5分ごろに
+`NEON_DATABASE_URL`を登録してください。毎週土曜日の日本時間午前8時17分ごろに
 クローラーと2種類の学習モデルを実行し、更新したモデルをリポジトリへpushします。
+GitHub ActionsのcronはUTC指定のため、`23:17 Friday UTC`を日本時間の土曜日午前8時17分に設定しています。予定時刻に起動しない場合に備え、午前10時17分にも再試行します。週内に一度正常完了していれば、再試行は自動でスキップされます。
 実行状況は **Actions → Weekly Keiba Update** で確認できます。
-GitHub ActionsのcronはUTC指定のため、`23:05 Friday UTC`を日本時間の土曜日午前8時5分に設定しています。
 
 接続URLやパスワードはGitやチャットに記載しないでください。
