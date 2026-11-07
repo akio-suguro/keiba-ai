@@ -11,74 +11,74 @@
     "counts": {
       "train": 6860,
       "validation": 1449,
-      "test": 1414
+      "test": 1445
     }
   },
   "counts": {
-    "all_labeled_races": 9723,
+    "all_labeled_races": 9754,
     "train_races": 6860,
     "validation_races": 1449,
-    "test_races": 1414
+    "test_races": 1445
   },
   "deployment_model_trained_through": "2026-11-07",
   "class_rates": {
     "train_upset_rate": 0.489067055393586,
     "validation_upset_rate": 0.47619047619047616,
-    "test_upset_rate": 0.4971711456859972
+    "test_upset_rate": 0.4982698961937716
   },
   "validation": {
     "n_races": 1449,
     "actual_upset_rate": 0.47619047619047616,
     "classification_threshold": 0.5,
-    "predicted_upset_rate": 0.5307108350586611,
-    "accuracy": 0.5976535541752933,
-    "balanced_accuracy": 0.5993412384716732,
-    "precision": 0.5695708712613784,
-    "recall": 0.6347826086956522,
-    "brier_score": 0.23936159555533032,
-    "log_loss": 0.6737696710759759,
+    "predicted_upset_rate": 0.5314009661835749,
+    "accuracy": 0.598343685300207,
+    "balanced_accuracy": 0.6000658761528327,
+    "precision": 0.5701298701298702,
+    "recall": 0.636231884057971,
+    "brier_score": 0.23935065528666452,
+    "log_loss": 0.6737461610167059,
     "confusion_matrix_labels_0_1": [
       [
         428,
         331
       ],
       [
-        252,
-        438
+        251,
+        439
       ]
     ],
-    "roc_auc": 0.6420098909701935,
-    "pr_auc": 0.6073141939613171,
+    "roc_auc": 0.6422103836092494,
+    "pr_auc": 0.6074411416264859,
     "top_10pct_upset_rate": 0.6551724137931034,
     "bottom_10pct_upset_rate": 0.25517241379310346
   },
   "test": {
-    "n_races": 1414,
-    "actual_upset_rate": 0.4971711456859972,
-    "classification_threshold": 0.48935386641034445,
-    "predicted_upset_rate": 0.48514851485148514,
-    "accuracy": 0.582036775106082,
-    "balanced_accuracy": 0.5819553730946136,
-    "precision": 0.5816326530612245,
-    "recall": 0.5675675675675675,
-    "brier_score": 0.24031454840822852,
-    "log_loss": 0.6731854299241871,
+    "n_races": 1445,
+    "actual_upset_rate": 0.4982698961937716,
+    "classification_threshold": 0.48897751434993153,
+    "predicted_upset_rate": 0.4906574394463668,
+    "accuracy": 0.5826989619377163,
+    "balanced_accuracy": 0.5826676245210728,
+    "precision": 0.5825105782792666,
+    "recall": 0.5736111111111111,
+    "brier_score": 0.24033766576797094,
+    "log_loss": 0.6731514231929593,
     "confusion_matrix_labels_0_1": [
       [
-        424,
-        287
+        429,
+        296
       ],
       [
-        304,
-        399
+        307,
+        413
       ]
     ],
-    "roc_auc": 0.6374269005847953,
-    "pr_auc": 0.6092108703958798,
-    "top_10pct_upset_rate": 0.7112676056338029,
-    "bottom_10pct_upset_rate": 0.176056338028169
+    "roc_auc": 0.6372337164750959,
+    "pr_auc": 0.6103973489379643,
+    "top_10pct_upset_rate": 0.7103448275862069,
+    "bottom_10pct_upset_rate": 0.1793103448275862
   },
-  "classification_threshold_selected_on_validation": 0.48935386641034445,
+  "classification_threshold_selected_on_validation": 0.48897751434993153,
   "categorical_features": [
     "venue",
     "surface",
