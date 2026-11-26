@@ -335,6 +335,34 @@ class JraSearchTests(unittest.TestCase):
 
 
 class DatabaseMigrationTests(unittest.TestCase):
+    def test_migrates_legacy_predictions_table_for_saved_results(self):
+        with sqlite3.connect(":memory:") as conn:
+            conn.executescript(
+                """
+                CREATE TABLE races (id INTEGER PRIMARY KEY, race_date TEXT);
+                CREATE TABLE horses (id INTEGER PRIMARY KEY, race_id INTEGER);
+                CREATE TABLE payouts (id INTEGER PRIMARY KEY, race_id INTEGER);
+                CREATE TABLE predictions (
+                    prediction_id INTEGER PRIMARY KEY,
+                    race_id INTEGER NOT NULL,
+                    predicted_at TEXT NOT NULL,
+                    cutoff_at TEXT NOT NULL,
+                    chaos_probability REAL NOT NULL,
+                    uncertainty_score REAL,
+                    decision TEXT NOT NULL,
+                    model_version TEXT NOT NULL
+                );
+                """
+            )
+
+            crawl_jra.init_db(conn)
+
+            columns = crawl_jra.get_table_columns(conn, "predictions")
+
+        self.assertIn("top3_predictions", columns)
+        self.assertIn("upset_factors", columns)
+        self.assertIn("evaluated_at", columns)
+
     def test_adds_optional_result_columns_to_existing_tables(self):
         with sqlite3.connect(":memory:") as conn:
             conn.executescript(
@@ -373,6 +401,75 @@ class DatabaseMigrationTests(unittest.TestCase):
             }.issubset(horses)
         )
         self.assertIn("popularity", payouts)
+        with sqlite3.connect(":memory:") as conn:
+            crawl_jra.init_db(conn)
+            prediction_columns = crawl_jra.get_table_columns(
+                conn,
+                "predictions",
+            )
+            retry_columns = crawl_jra.get_table_columns(
+                conn,
+                "crawl_retry_queue",
+            )
+            evaluation_columns = crawl_jra.get_table_columns(
+                conn,
+                "prediction_evaluations",
+            )
+
+        self.assertIn("top3_predictions", prediction_columns)
+        self.assertIn("evaluated_at", prediction_columns)
+        self.assertIn("next_retry_at", retry_columns)
+        self.assertIn("mean_correct_picks", evaluation_columns)
+
+
+class CrawlerRetryQueueTests(unittest.TestCase):
+    def test_failed_url_is_queued_then_marked_resolved_on_retry(self):
+        url = "https://example.test/race.html"
+        with sqlite3.connect(":memory:") as conn:
+            conn.row_factory = sqlite3.Row
+            crawl_jra.init_db(conn)
+            crawl_jra.save_error(conn, url, RuntimeError("temporary failure"))
+            queued = conn.execute(
+                """
+                SELECT retry_count, resolved_at
+                FROM crawl_retry_queue WHERE url = ?
+                """,
+                (url,),
+            ).fetchone()
+            self.assertEqual(queued["retry_count"], 1)
+            self.assertIsNone(queued["resolved_at"])
+            conn.execute(
+                "UPDATE crawl_retry_queue SET next_retry_at = '2000-01-01'"
+            )
+
+            with patch.object(
+                crawl_jra,
+                "fetch_html",
+                return_value=BeautifulSoup("<html></html>", "html.parser"),
+            ) as fetch_html:
+                errors = crawl_jra.process_retry_queue(conn)
+
+            self.assertEqual(errors, 0)
+            fetch_html.assert_called_once_with(url)
+            resolved = conn.execute(
+                "SELECT resolved_at FROM crawl_retry_queue WHERE url = ?",
+                (url,),
+            ).fetchone()
+
+        self.assertIsNotNone(resolved["resolved_at"])
+
+    def test_repeated_failure_increments_backoff_attempt_count(self):
+        with sqlite3.connect(":memory:") as conn:
+            conn.row_factory = sqlite3.Row
+            crawl_jra.init_db(conn)
+            crawl_jra.save_error(conn, "https://example.test/fail", ValueError("one"))
+            crawl_jra.save_error(conn, "https://example.test/fail", ValueError("two"))
+
+            retry_count = conn.execute(
+                "SELECT retry_count FROM crawl_retry_queue"
+            ).fetchone()[0]
+
+        self.assertEqual(retry_count, 2)
 
 
 class SaveRaceDeduplicationTests(unittest.TestCase):

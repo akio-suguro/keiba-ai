@@ -39,6 +39,8 @@ from zoneinfo import ZoneInfo
 import requests
 from bs4 import BeautifulSoup
 from sqlalchemy.exc import SQLAlchemyError
+from urllib3.util.retry import Retry
+from requests.adapters import HTTPAdapter
 
 if __package__:
     from .database import (
@@ -82,6 +84,7 @@ MAX_DATABASE_SIZE_BYTES = 90_000_000
 
 REQUEST_INTERVAL = 5
 REQUEST_TIMEOUT = 30
+MAX_RETRIES_PER_RUN = 50
 
 HEADERS = {
     "User-Agent": (
@@ -93,6 +96,18 @@ HEADERS = {
 
 SESSION = requests.Session()
 SESSION.headers.update(HEADERS)
+retry_policy = Retry(
+    total=3,
+    connect=3,
+    read=2,
+    status=3,
+    backoff_factor=2,
+    status_forcelist=(429, 500, 502, 503, 504),
+    allowed_methods=frozenset({"GET", "POST"}),
+    respect_retry_after_header=True,
+)
+SESSION.mount("https://", HTTPAdapter(max_retries=retry_policy))
+SESSION.mount("http://", HTTPAdapter(max_retries=retry_policy))
 
 
 class JraParameterError(RuntimeError):
@@ -208,6 +223,7 @@ def fetch_html(url: str) -> BeautifulSoup:
     HTMLをHTTP取得してメモリ上で解析する。
     ファイル保存・HTMLキャッシュは行わない。
     """
+    time.sleep(REQUEST_INTERVAL)
     response = SESSION.get(
         url,
         timeout=REQUEST_TIMEOUT,
@@ -388,6 +404,8 @@ def save_error(
     try:
         if is_postgres(conn) and conn.in_transaction():
             conn.rollback()
+        error_text = f"{type(error).__name__}: {error}"[:2000]
+        now = datetime.now().isoformat(timespec="seconds")
         db_execute(
             conn,
             """
@@ -396,14 +414,108 @@ def save_error(
             """,
             (
                 url,
-                f"{type(error).__name__}: {error}"[:2000],
-                datetime.now().isoformat(timespec="seconds"),
+                error_text,
+                now,
             ),
+        )
+        existing = db_execute(
+            conn,
+            "SELECT retry_count FROM crawl_retry_queue WHERE url = ?",
+            (url,),
+        ).fetchone()
+        retry_count = int(existing[0]) + 1 if existing else 1
+        delay_seconds = min(3600 * (2 ** min(retry_count - 1, 7)), 604800)
+        next_retry = (
+            datetime.now() + timedelta(seconds=delay_seconds)
+        ).isoformat(timespec="seconds")
+        db_execute(
+            conn,
+            """
+            INSERT INTO crawl_retry_queue (
+                url, retry_count, next_retry_at, last_error, updated_at,
+                resolved_at
+            ) VALUES (?, ?, ?, ?, ?, NULL)
+            ON CONFLICT (url) DO UPDATE SET
+                retry_count = excluded.retry_count,
+                next_retry_at = excluded.next_retry_at,
+                last_error = excluded.last_error,
+                updated_at = excluded.updated_at,
+                resolved_at = NULL
+            """,
+            (url, retry_count, next_retry, error_text, now),
         )
         conn.commit()
     except (sqlite3.Error, SQLAlchemyError) as exc:
         conn.rollback()
         print(f"[ERROR] クロールエラーの記録に失敗しました: {exc}")
+
+
+def clear_retry_queue(conn, url: str) -> None:
+    db_execute(
+        conn,
+        """
+        UPDATE crawl_retry_queue
+        SET resolved_at = ?, updated_at = ?
+        WHERE url = ?
+        """,
+        (
+            datetime.now().isoformat(timespec="seconds"),
+            datetime.now().isoformat(timespec="seconds"),
+            url,
+        ),
+    )
+    conn.commit()
+
+
+def process_retry_queue(conn) -> int:
+    """Retry due failed URLs with bounded work and durable backoff."""
+    now = datetime.now().isoformat(timespec="seconds")
+    rows = db_execute(
+        conn,
+        """
+        SELECT url
+        FROM crawl_retry_queue
+        WHERE resolved_at IS NULL AND next_retry_at <= ?
+        ORDER BY next_retry_at, retry_count
+        LIMIT ?
+        """,
+        (now, MAX_RETRIES_PER_RUN),
+    ).fetchall()
+    errors = 0
+    for row in rows:
+        url = row_value(row, "url")
+        parsed = urlparse(url)
+        cname = parse_qs(parsed.query).get("CNAME", [None])[0]
+        try:
+            if parsed.path.endswith("/JRADB/accessS.html") and cname:
+                if cname.lower().startswith("pw01sde"):
+                    _, _, success = crawl_one_race(conn, url)
+                    if success is False:
+                        errors += 1
+                    elif success is True:
+                        clear_retry_queue(conn, url)
+                else:
+                    fetch_jra_search_page(cname)
+                    clear_retry_queue(conn, url)
+            elif parsed.path.endswith("/JRADB/accessD.html") and cname:
+                if cname.lower().startswith("pw01dde"):
+                    _, success = crawl_one_entry(conn, cname)
+                    if success is False:
+                        errors += 1
+                    elif success is True:
+                        clear_retry_queue(conn, url)
+                else:
+                    fetch_jra_card_page(cname)
+                    clear_retry_queue(conn, url)
+            else:
+                fetch_html(url)
+                clear_retry_queue(conn, url)
+            print(f"[RETRY] {url}")
+        except Exception as exc:
+            print(f"[RETRY-ERROR] {url} | {type(exc).__name__}: {exc}")
+            save_error(conn, url, exc)
+            errors += 1
+    return errors
 
 
 # ============================================================
@@ -1863,6 +1975,7 @@ def crawl_one_race(
             )
 
         save_race(conn, race, horses, payouts)
+        clear_retry_queue(conn, url)
 
         print(
             f"[OK] {race['race_date']} {race['venue']} "
@@ -1914,6 +2027,7 @@ def crawl_one_entry(
             )
 
         save_race(conn, race, horses, [])
+        clear_retry_queue(conn, url)
         print(
             f"[ENTRY] {race['race_date']} {race['venue']} "
             f"{race['race_name']} "
@@ -1967,6 +2081,7 @@ def main(
             )
             checkdigits = {}
         else:
+            total_error += process_retry_queue(conn)
             try:
                 checkdigits = year_month_checkdigits()
             except Exception as exc:

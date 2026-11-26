@@ -72,6 +72,59 @@ TEST_START = "2025-01-01"
 UPSET_POPULARITY_THRESHOLD = 7
 
 RANDOM_STATE = 42
+TRAINING_WINDOW_YEARS = 5
+FEATURE_HISTORY_YEARS = 10
+
+
+class SigmoidCalibratedModel:
+    """Apply a chronological Platt calibration to a fitted estimator."""
+
+    def __init__(self, estimator, calibrator):
+        self.estimator = estimator
+        self.calibrator = calibrator
+
+    @property
+    def named_steps(self):
+        return self.estimator.named_steps
+
+    @property
+    def feature_names_in_(self):
+        return self.estimator.feature_names_in_
+
+    @property
+    def classes_(self):
+        return self.estimator.classes_
+
+    def predict_proba(self, features):
+        raw_probability = self.estimator.predict_proba(features)[:, 1]
+        raw_probability = np.clip(raw_probability, 1e-6, 1 - 1e-6)
+        logits = np.log(raw_probability / (1 - raw_probability)).reshape(-1, 1)
+        calibrated = self.calibrator.predict_proba(logits)[:, 1]
+        return np.column_stack((1 - calibrated, calibrated))
+
+
+def fit_probability_calibrator(
+    labels: pd.Series,
+    probabilities: np.ndarray,
+) -> LogisticRegression:
+    """Fit sigmoid probability calibration on chronological validation data."""
+    y = np.asarray(labels, dtype=int)
+    if len(np.unique(y)) != 2:
+        raise ValueError(
+            "確率校正には両クラスを含む時系列検証データが必要です。"
+        )
+    probabilities = np.clip(
+        np.asarray(probabilities, dtype=float),
+        1e-6,
+        1 - 1e-6,
+    )
+    logits = np.log(probabilities / (1 - probabilities)).reshape(-1, 1)
+    calibrator = LogisticRegression(
+        max_iter=1000,
+        random_state=RANDOM_STATE,
+    )
+    calibrator.fit(logits, y)
+    return calibrator
 
 
 # ============================================================
@@ -94,13 +147,33 @@ def load_database() -> tuple[pd.DataFrame, pd.DataFrame]:
         )
 
     with _connect_database() as conn:
-        races = read_sql_query(
-            "SELECT * FROM races",
+        latest_date_frame = read_sql_query(
+            "SELECT MAX(race_date) AS latest_date FROM races",
             conn,
         )
-        horses = read_sql_query(
-            "SELECT * FROM horses",
+        latest_date = pd.to_datetime(
+            latest_date_frame.loc[0, "latest_date"],
+            errors="coerce",
+        )
+        if pd.isna(latest_date):
+            raise ValueError("レース日が有効なデータがありません。")
+        history_start = (
+            latest_date - pd.DateOffset(years=FEATURE_HISTORY_YEARS)
+        ).date().isoformat()
+        races = read_sql_query(
+            "SELECT * FROM races WHERE race_date >= ?",
             conn,
+            params=(history_start,),
+        )
+        horses = read_sql_query(
+            """
+            SELECT h.*
+            FROM horses h
+            JOIN races r ON r.id = h.race_id
+            WHERE r.race_date >= ?
+            """,
+            conn,
+            params=(history_start,),
         )
 
     required_races = {
@@ -161,6 +234,8 @@ def load_database() -> tuple[pd.DataFrame, pd.DataFrame]:
 def build_race_labels(
     races: pd.DataFrame,
     horses: pd.DataFrame,
+    *,
+    verbose: bool = True,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
     7番人気以下の馬が1〜3着に入ったレースを波乱とする。
@@ -295,26 +370,27 @@ def build_race_labels(
         columns={"target_race_upset": "actual_upset"}
     )
 
-    print("\n=== ラベル作成結果 ===")
-    print(f"ラベル作成対象レース数: {len(data)}")
-    print(
-        "波乱レース数: "
-        f"{int(data['target_race_upset'].sum())}"
-    )
-    print(
-        "通常レース数: "
-        f"{int((data['target_race_upset'] == 0).sum())}"
-    )
-    print(
-        "波乱率: "
-        f"{data['target_race_upset'].mean():.2%}"
-    )
-    print(f"3着以内の着順不備で除外: {excluded_incomplete}")
-    print(
-        "3着以内の人気順位不備で除外: "
-        f"{excluded_invalid_popularity}"
-    )
-    print("1〜3着が確定できないレースは除外")
+    if verbose:
+        print("\n=== ラベル作成結果 ===")
+        print(f"ラベル作成対象レース数: {len(data)}")
+        print(
+            "波乱レース数: "
+            f"{int(data['target_race_upset'].sum())}"
+        )
+        print(
+            "通常レース数: "
+            f"{int((data['target_race_upset'] == 0).sum())}"
+        )
+        print(
+            "波乱率: "
+            f"{data['target_race_upset'].mean():.2%}"
+        )
+        print(f"3着以内の着順不備で除外: {excluded_incomplete}")
+        print(
+            "3着以内の人気順位不備で除外: "
+            f"{excluded_invalid_popularity}"
+        )
+        print("1〜3着が確定できないレースは除外")
 
     return data, audit
 
@@ -372,6 +448,71 @@ def add_race_features(
         pd.to_numeric(start_parts[0], errors="coerce") * 60
         + pd.to_numeric(start_parts[1], errors="coerce")
     )
+
+    if "target_race_upset" in race_frame.columns:
+        label_history = race_frame[
+            ["race_id", "race_date", "race_name", "target_race_upset"]
+        ].copy()
+    else:
+        label_history, _ = build_race_labels(
+            races,
+            horses,
+            verbose=False,
+        )
+        label_history = label_history[
+            ["race_id", "race_date", "race_name", "target_race_upset"]
+        ]
+    label_history["race_date"] = pd.to_datetime(
+        label_history["race_date"],
+        errors="coerce",
+    ).dt.normalize()
+    label_history = label_history.dropna(
+        subset=["race_date", "race_name", "target_race_upset"]
+    )
+    if not label_history.empty:
+        daily_name_rates = label_history.groupby(
+            ["race_name", "race_date"],
+            as_index=False,
+            sort=True,
+            observed=True,
+        ).agg(
+            __races=("target_race_upset", "size"),
+            __upsets=("target_race_upset", "sum"),
+        )
+        grouped_name = daily_name_rates.groupby(
+            "race_name",
+            sort=False,
+            observed=True,
+        )
+        daily_name_rates["race_name_prior_races"] = (
+            grouped_name["__races"].cumsum() - daily_name_rates["__races"]
+        )
+        prior_upsets = (
+            grouped_name["__upsets"].cumsum() - daily_name_rates["__upsets"]
+        )
+        daily_name_rates["race_name_prior_upset_rate"] = prior_upsets.div(
+            daily_name_rates["race_name_prior_races"].replace(0, np.nan)
+        )
+        race_frame = race_frame.merge(
+            daily_name_rates[
+                [
+                    "race_name",
+                    "race_date",
+                    "race_name_prior_races",
+                    "race_name_prior_upset_rate",
+                ]
+            ],
+            on=["race_name", "race_date"],
+            how="left",
+            validate="many_to_one",
+            sort=False,
+        )
+        race_frame["race_name_prior_races"] = (
+            race_frame["race_name_prior_races"].fillna(0)
+        )
+    else:
+        race_frame["race_name_prior_races"] = 0
+        race_frame["race_name_prior_upset_rate"] = np.nan
 
     date_by_race = races[["id", "race_date"]].rename(
         columns={"id": "race_id"}
@@ -451,7 +592,6 @@ def add_race_features(
         "venue",
         "surface",
         "direction",
-        "race_name",
         "distance_band",
         "weather",
         "turf_condition",
@@ -470,6 +610,8 @@ def add_race_features(
         "race_number",
         "start_minutes",
         "field_size",
+        "race_name_prior_races",
+        "race_name_prior_upset_rate",
         *[
             column
             for column in race_frame.columns
@@ -734,6 +876,23 @@ def evaluate(
         ranked.tail(n_tail)["actual"].mean()
     )
 
+    calibration_error = 0.0
+    for lower in np.linspace(0, 0.9, 10):
+        upper = lower + 0.1
+        in_bin = (
+            (probabilities >= lower)
+            & (
+                (probabilities < upper)
+                | ((upper >= 1.0) & (probabilities <= upper))
+            )
+        )
+        if in_bin.any():
+            calibration_error += float(in_bin.mean()) * abs(
+                float(y[in_bin].mean())
+                - float(probabilities[in_bin].mean())
+            )
+    result["expected_calibration_error_10_bins"] = calibration_error
+
     return result
 
 
@@ -796,6 +955,12 @@ def main() -> None:
         horses,
     )
 
+    latest_date = data["race_date"].max().normalize()
+    training_start = latest_date - pd.DateOffset(
+        years=TRAINING_WINDOW_YEARS
+    )
+    data = data.loc[data["race_date"].ge(training_start)].copy()
+
     target = "target_race_upset"
     feature_cols = categorical + numeric
 
@@ -840,12 +1005,19 @@ def main() -> None:
         train[target].astype(int),
     )
 
-    # 検証・テストデータの波乱確率
-    valid_prob = model.predict_proba(
+    # Calibrate on the chronological validation interval only.
+    valid_raw_probability = model.predict_proba(
         valid[feature_cols]
     )[:, 1]
-
-    test_prob = model.predict_proba(
+    probability_calibrator = fit_probability_calibrator(
+        valid[target],
+        valid_raw_probability,
+    )
+    valid_model = SigmoidCalibratedModel(model, probability_calibrator)
+    valid_prob = valid_model.predict_proba(
+        valid[feature_cols]
+    )[:, 1]
+    test_prob = valid_model.predict_proba(
         test[feature_cols]
     )[:, 1]
 
@@ -865,7 +1037,7 @@ def main() -> None:
     )
 
     metrics = {
-        "model": "standardized_unweighted_logistic_regression",
+        "model": "standardized_logistic_regression_with_sigmoid_calibration",
         "target": target,
         "definition": (
             "At least one horse with popularity rank >= 7 "
@@ -889,6 +1061,11 @@ def main() -> None:
         "deployment_model_trained_through": str(
             data["race_date"].max().date()
         ),
+        "training_window": {
+            "years": TRAINING_WINDOW_YEARS,
+            "start": str(training_start.date()),
+            "end": str(latest_date.date()),
+        },
         "class_rates": {
             "train_upset_rate": float(train[target].mean()),
             "validation_upset_rate": float(valid[target].mean()),
@@ -899,6 +1076,13 @@ def main() -> None:
         "classification_threshold_selected_on_validation": (
             classification_threshold
         ),
+        "probability_calibration": {
+            "method": "Platt sigmoid calibration fitted on chronological validation data",
+            "intercept": float(probability_calibrator.intercept_[0]),
+            "coefficient": float(probability_calibrator.coef_[0, 0]),
+            "validation": validation_metrics,
+            "test": test_metrics,
+        },
         "categorical_features": categorical,
         "numeric_features": numeric,
         "features": feature_cols,
@@ -926,11 +1110,19 @@ def main() -> None:
 
     # モデル保存
     model_path = OUTPUT_DIR / "upset_model.joblib"
-    model.fit(
+    deployment_estimator = make_pipeline(
+        categorical,
+        numeric,
+    )
+    deployment_estimator.fit(
         data[feature_cols],
         data[target].astype(int),
     )
-    joblib.dump(model, model_path)
+    deployment_model = SigmoidCalibratedModel(
+        deployment_estimator,
+        probability_calibrator,
+    )
+    joblib.dump(deployment_model, model_path)
 
     # 指標保存
     metrics_path = OUTPUT_DIR / "metrics.json"

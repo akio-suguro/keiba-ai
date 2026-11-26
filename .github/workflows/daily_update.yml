@@ -27,10 +27,10 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-          cache-dependency-path: requirements.txt
+          cache-dependency-path: requirements.lock
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: pip install -r requirements.lock
 
       - name: Verify database configuration
         env:
@@ -40,6 +40,9 @@ jobs:
             echo "NEON_DATABASE_URL secret is required." >&2
             exit 1
           fi
+
+      - name: Run test suite
+        run: python -m pytest -q
 
       - name: Check weekly update status
         id: weekly-update
@@ -65,6 +68,12 @@ jobs:
           DATABASE_URL: ${{ secrets.NEON_DATABASE_URL }}
         run: python scripts/train_upset_model.py
 
+      - name: Precompute and save upcoming race predictions
+        if: steps.weekly-update.outputs.run == 'true'
+        env:
+          DATABASE_URL: ${{ secrets.NEON_DATABASE_URL }}
+        run: python scripts/predict_upcoming.py
+
       - name: Publish updated models to the repository
         if: steps.weekly-update.outputs.run == 'true'
         run: |
@@ -72,6 +81,7 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add \
             data/model/top3_model.joblib \
+            data/model/top3_market_model.joblib \
             data/model/metrics.json \
             data/model/upset/upset_model.joblib \
             data/model/upset/metrics.json

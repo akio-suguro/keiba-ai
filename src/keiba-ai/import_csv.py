@@ -6,7 +6,7 @@ import pandas as pd
 ROOT = Path(__file__).resolve().parents[2]
 DB_PATH = ROOT / "data" / "db" / "keiba.db"
 CSV_PATH = ROOT / "data" / "processed" / "race_entries.csv"
-SCHEMA_PATH = Path(__file__).with_name("schema.sql")
+SCHEMA_PATH = Path(__file__).with_name("import_schema.sql")
 
 REQUIRED = {
     "race_id", "race_date", "venue", "race_number",

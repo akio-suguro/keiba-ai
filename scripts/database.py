@@ -216,6 +216,62 @@ def initialize_schema(
             occurred_at TEXT
         )
         """,
+        """
+        CREATE TABLE IF NOT EXISTS crawl_retry_queue (
+            url TEXT PRIMARY KEY,
+            retry_count INTEGER NOT NULL DEFAULT 0,
+            next_retry_at TEXT NOT NULL,
+            last_error TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            resolved_at TEXT
+        )
+        """,
+        f"""
+        CREATE TABLE IF NOT EXISTS predictions (
+            prediction_id {identity},
+            race_id INTEGER NOT NULL,
+            predicted_at TEXT NOT NULL,
+            cutoff_at TEXT,
+            chaos_probability REAL NOT NULL DEFAULT 0,
+            uncertainty_score REAL,
+            decision TEXT NOT NULL DEFAULT 'unavailable',
+            model_version TEXT NOT NULL,
+            top3_predictions TEXT,
+            upset_factors TEXT,
+            evaluated_at TEXT
+        )
+        """,
+        f"""
+        CREATE TABLE IF NOT EXISTS model_evaluations (
+            evaluation_id {identity},
+            model_version TEXT NOT NULL,
+            train_until TEXT NOT NULL,
+            test_from TEXT NOT NULL,
+            test_until TEXT NOT NULL,
+            skip_rate REAL,
+            chaos_recall REAL,
+            chaos_precision REAL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """,
+        f"""
+        CREATE TABLE IF NOT EXISTS prediction_evaluations (
+            evaluation_id {identity},
+            model_version TEXT NOT NULL,
+            evaluated_at TEXT NOT NULL,
+            test_from TEXT NOT NULL,
+            test_until TEXT NOT NULL,
+            evaluated_races INTEGER NOT NULL,
+            mean_correct_picks REAL NOT NULL,
+            precision_at_3 REAL NOT NULL,
+            win_return_rate REAL,
+            quinella_return_rate REAL,
+            trio_return_rate REAL,
+            upset_races INTEGER NOT NULL DEFAULT 0,
+            upset_brier_score REAL,
+            upset_top_10pct_rate REAL
+        )
+        """,
     ]
     for statement in statements:
         execute(connection, statement)
@@ -239,6 +295,21 @@ def initialize_schema(
             "source_fields": "TEXT",
         },
         "payouts": {"popularity": "INTEGER"},
+        "predictions": {
+            "cutoff_at": "TEXT",
+            "chaos_probability": "REAL",
+            "uncertainty_score": "REAL",
+            "decision": "TEXT",
+            "model_version": "TEXT",
+            "top3_predictions": "TEXT",
+            "upset_factors": "TEXT",
+            "evaluated_at": "TEXT",
+        },
+        "prediction_evaluations": {
+            "upset_races": "INTEGER NOT NULL DEFAULT 0",
+            "upset_brier_score": "REAL",
+            "upset_top_10pct_rate": "REAL",
+        },
     }
     for table, columns in optional_columns.items():
         existing = table_columns(connection, table)
@@ -254,6 +325,10 @@ def initialize_schema(
         ("idx_races_date", "races", "race_date"),
         ("idx_horses_race", "horses", "race_id"),
         ("idx_payouts_race", "payouts", "race_id"),
+        ("idx_crawl_retry_due", "crawl_retry_queue", "next_retry_at"),
+        ("idx_predictions_race", "predictions", "race_id"),
+        ("idx_predictions_time", "predictions", "predicted_at"),
+        ("idx_prediction_evaluations_model", "prediction_evaluations", "model_version"),
     ):
         execute(
             connection,

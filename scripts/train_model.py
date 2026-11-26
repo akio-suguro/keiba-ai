@@ -6,32 +6,30 @@ import sqlite3
 from pathlib import Path
 
 import joblib
+import lightgbm as lgb
+import numpy as np
 import pandas as pd
 import sklearn
 from sqlalchemy.engine import Connection
 from sklearn.compose import ColumnTransformer
-from sklearn.ensemble import HistGradientBoostingClassifier
 from sklearn.impute import SimpleImputer
-from sklearn.metrics import (
-    accuracy_score,
-    average_precision_score,
-    classification_report,
-    precision_score,
-    recall_score,
-    roc_auc_score,
-)
+from sklearn.metrics import ndcg_score
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder
 
 if __package__:
     from .model_features import (
         HISTORICAL_FEATURE_COLUMNS,
+        add_race_name_history_features,
+        add_race_relative_features,
         add_historical_performance_features,
         add_sex_age_features,
     )
 else:
     from model_features import (
         HISTORICAL_FEATURE_COLUMNS,
+        add_race_name_history_features,
+        add_race_relative_features,
         add_historical_performance_features,
         add_sex_age_features,
     )
@@ -55,6 +53,9 @@ DB_PATH = PROJECT_ROOT / "data" / "keiba.db"
 OUTPUT_DIR = PROJECT_ROOT / "data" / "model"
 
 RANDOM_STATE = 42
+TRAINING_WINDOW_YEARS = 5
+FEATURE_HISTORY_YEARS = 10
+WALK_FORWARD_FOLDS = 3
 
 RACE_FEATURES = (
     "race_date",
@@ -78,6 +79,8 @@ HORSE_FEATURES = (
     "horse_name",
     "sex_age",
     "weight",
+    "time",
+    "last_3f",
     "jockey",
     "trainer",
     "body_weight",
@@ -124,6 +127,19 @@ def load_data():
                 f"races={sorted(missing_races)}, "
                 f"horses={sorted(missing_horses)}"
             )
+        latest_date_frame = read_sql_query(
+            "SELECT MAX(race_date) AS latest_date FROM races",
+            conn,
+        )
+        latest_date = pd.to_datetime(
+            latest_date_frame.loc[0, "latest_date"],
+            errors="coerce",
+        )
+        if pd.isna(latest_date):
+            raise ValueError("レース日が有効な学習データがありません。")
+        history_start = (
+            latest_date - pd.DateOffset(years=FEATURE_HISTORY_YEARS)
+        ).date().isoformat()
 
         race_select = [
             f'r."{column}" AS "{column}"'
@@ -146,8 +162,9 @@ def load_data():
             JOIN races r ON r.id = h.race_id
             WHERE h.finish IS NOT NULL
               AND r.race_date IS NOT NULL
+              AND r.race_date >= ?
         """
-        df = read_sql_query(query, conn)
+        df = read_sql_query(query, conn, params=(history_start,))
 
     if df.empty:
         raise ValueError("学習対象のデータがありません。")
@@ -217,13 +234,28 @@ def load_data():
 
     df = add_sex_age_features(df)
     df = add_historical_performance_features(df)
+    df = add_race_name_history_features(df)
+    df = add_race_relative_features(
+        df,
+        [
+            "popularity",
+            "odds",
+            "horse_prior_starts",
+            "horse_prior_win_rate",
+            "horse_prior_top3_rate",
+            "horse_recent_win_rate_5",
+            "horse_recent_top3_rate_5",
+            "horse_surface_prior_top3_rate",
+            "horse_course_distance_prior_top3_rate",
+            "jockey_horse_prior_top3_rate",
+        ],
+    )
     df["target_top3"] = df["finish"].le(3).astype(int)
 
     categorical_candidates = [
         "venue",
         "surface",
         "direction",
-        "race_name",
         "weather",
         "turf_condition",
         "dirt_condition",
@@ -247,6 +279,21 @@ def load_data():
         "popularity",
         "odds",
         *HISTORICAL_FEATURE_COLUMNS,
+        *[
+            f"{column}_race_percentile"
+            for column in (
+                "popularity",
+                "odds",
+                "horse_prior_starts",
+                "horse_prior_win_rate",
+                "horse_prior_top3_rate",
+                "horse_recent_win_rate_5",
+                "horse_recent_top3_rate_5",
+                "horse_surface_prior_top3_rate",
+                "horse_course_distance_prior_top3_rate",
+                "jockey_horse_prior_top3_rate",
+            )
+        ],
     ]
     categorical_features = [
         column
@@ -320,7 +367,7 @@ def build_model(
     categorical_features,
     numeric_features,
 ):
-    """Build an imputation, encoding and ranking-score classification pipeline."""
+    """Build a race-grouped LambdaRank model."""
     transformers = []
     if numeric_features:
         transformers.append(
@@ -352,6 +399,7 @@ def build_model(
                             OneHotEncoder(
                                 handle_unknown="ignore",
                                 min_frequency=10,
+                                sparse_output=True,
                             ),
                         ),
                     ]
@@ -368,21 +416,41 @@ def build_model(
                 "preprocessor",
                 ColumnTransformer(
                     transformers=transformers,
-                    sparse_threshold=0.0,
+                    sparse_threshold=1.0,
                 ),
             ),
             (
-                "classifier",
-                HistGradientBoostingClassifier(
-                    max_iter=140,
-                    learning_rate=0.06,
-                    max_leaf_nodes=15,
-                    l2_regularization=3.0,
+                "ranker",
+                lgb.LGBMRanker(
+                    objective="lambdarank",
+                    metric="ndcg",
+                    n_estimators=180,
+                    learning_rate=0.05,
+                    num_leaves=20,
+                    min_child_samples=30,
+                    lambdarank_truncation_level=3,
                     random_state=RANDOM_STATE,
+                    verbosity=-1,
                 ),
             ),
         ]
     )
+
+
+def _fit_ranker(model, data: pd.DataFrame, feature_columns: list[str]):
+    """Sort rows by race before passing LightGBM's contiguous group sizes."""
+    ordered = data.sort_values(
+        ["race_id", "horse_number"],
+        kind="stable",
+    )
+    group_sizes = ordered.groupby("race_id", sort=False).size().tolist()
+    model.fit(
+        ordered[feature_columns],
+        ordered["target_top3"].astype(int),
+        ranker__group=group_sizes,
+        ranker__eval_at=(3,),
+    )
+    return model
 
 
 def _top_three_metrics(
@@ -404,14 +472,12 @@ def _top_three_metrics(
             excluded_races += 1
             continue
 
-        predicted = set(
-            group.sort_values(
-                [score_column, "horse_number"],
-                ascending=[False, True],
-                kind="stable",
-            )
-            .head(3)["horse_number"]
+        ordered = group.sort_values(
+            [score_column, "horse_number"],
+            ascending=[False, True],
+            kind="stable",
         )
+        predicted = set(ordered.head(3)["horse_number"])
         actual = set(group.loc[placed, "horse_number"])
         hits = len(predicted & actual)
         race_results.append(
@@ -422,6 +488,13 @@ def _top_three_metrics(
                     in predicted
                 ),
                 "exact_top3": int(predicted == actual),
+                "ndcg_at_3": float(
+                    ndcg_score(
+                        [ordered["finish"].isin([1, 2, 3]).astype(int).to_numpy()],
+                        [ordered[score_column].to_numpy()],
+                        k=3,
+                    )
+                ),
             }
         )
 
@@ -438,6 +511,7 @@ def _top_three_metrics(
         "race_with_any_top3_hit_rate": float(results["hits"].gt(0).mean()),
         "winner_hit_rate": float(results["winner_hit"].mean()),
         "exact_top3_set_rate": float(results["exact_top3"].mean()),
+        "ndcg_at_3": float(results["ndcg_at_3"].mean()),
     }
 
 
@@ -458,65 +532,45 @@ def evaluate_model(
     model,
     test_df,
     feature_columns,
+    payouts: pd.DataFrame | None = None,
 ):
-    """Report classification scores and race-level top-three selection quality."""
-    probabilities = model.predict_proba(test_df[feature_columns])[:, 1]
+    """Report race-ranking quality, market baselines and payout returns."""
+    if hasattr(model, "predict_proba"):
+        scores = model.predict_proba(test_df[feature_columns])[:, 1]
+    else:
+        scores = np.asarray(model.predict(test_df[feature_columns])).reshape(-1)
     y_test = test_df["target_top3"].astype(int)
-    predictions = (probabilities >= 0.5).astype(int)
 
     metrics = {
-        "model": "HistGradientBoostingClassifier",
-        "target": "finish <= 3",
+        "model": "LightGBM LambdaRank",
+        "objective": "race-grouped NDCG@3",
         "sklearn_version": sklearn.__version__,
         "test_horses": int(len(test_df)),
         "test_races": int(test_df["race_id"].nunique()),
         "test_start_date": str(test_df["race_date"].min().date()),
         "test_end_date": str(test_df["race_date"].max().date()),
         "features": feature_columns,
-        "positive_rate_test": float(y_test.mean()),
-        "accuracy_at_0_5": float(accuracy_score(y_test, predictions)),
-        "precision_at_0_5": float(
-            precision_score(y_test, predictions, zero_division=0)
-        ),
-        "recall_at_0_5": float(
-            recall_score(y_test, predictions, zero_division=0)
-        ),
-        "classification_report_at_0_5": classification_report(
-            y_test,
-            predictions,
-            labels=[0, 1],
-            target_names=["4着以下", "3着以内"],
-            zero_division=0,
-            output_dict=True,
-        ),
     }
-    if y_test.nunique() == 2:
-        metrics["roc_auc"] = float(
-            roc_auc_score(y_test, probabilities)
-        )
-        metrics["average_precision"] = float(
-            average_precision_score(y_test, probabilities)
-        )
-    else:
-        metrics["roc_auc"] = None
-        metrics["average_precision"] = None
 
+    prediction_columns = [
+        "race_id",
+        "race_date",
+        "venue",
+        "race_name",
+        "horse_number",
+        "finish",
+        "target_top3",
+        "popularity",
+        "odds",
+    ]
     predictions_df = test_df[
-        [
-            "race_id",
-            "race_date",
-            "venue",
-            "race_name",
-            "horse_number",
-            "finish",
-            "target_top3",
-        ]
+        [column for column in prediction_columns if column in test_df.columns]
     ].copy()
     rank_scores = _race_ranking_scores(
         test_df,
-        probabilities,
+        scores,
     )
-    predictions_df["predicted_probability_top3"] = probabilities
+    predictions_df["predicted_score"] = scores
     predictions_df["model_rank_score"] = rank_scores["model_score"].to_numpy()
     predictions_df["ranking_score"] = rank_scores["ranking_score"].to_numpy()
     ordered_predictions = predictions_df.sort_values(
@@ -539,6 +593,7 @@ def evaluate_model(
         predictions_df,
         "ranking_score",
     )
+    metrics["target_top3_prevalence"] = float(y_test.mean())
     if "popularity" in test_df.columns:
         market = test_df.copy()
         market["popularity"] = pd.to_numeric(
@@ -574,13 +629,155 @@ def evaluate_model(
                 - complete_market_races["race_id"].nunique()
             )
             metrics["popularity_baseline"] = popularity_metrics
+    if payouts is not None:
+        metrics["payout_simulation"] = simulate_payout_returns(
+            predictions_df,
+            payouts,
+        )
 
     return metrics, predictions_df
+
+
+def _normalize_combination(value: str, *, ordered: bool) -> str | None:
+    parts = str(value).strip().split("-")
+    if not parts or any(not part.isdigit() for part in parts):
+        return None
+    parts = [str(int(part)) for part in parts]
+    if not ordered:
+        parts.sort(key=int)
+    return "-".join(parts)
+
+
+def simulate_payout_returns(
+    predictions: pd.DataFrame,
+    payouts: pd.DataFrame,
+    stake_per_bet: int = 100,
+) -> dict[str, dict[str, float | int | str]]:
+    """Simulate one win, quinella and trio bet per complete test race."""
+    bet_specs = {
+        "単勝": ("単勝", 1, False),
+        "馬連": ("馬連", 2, False),
+        "3連複": ("3連複", 3, False),
+    }
+    results = {}
+    prediction_race_count = predictions["race_id"].nunique()
+    for label, (bet_type, selection_count, ordered) in bet_specs.items():
+        returns = 0
+        race_count = 0
+        covered_races = set(
+            payouts.loc[payouts["bet_type"] == bet_type, "race_id"]
+            .astype(str)
+        )
+        for race_id, group in predictions.groupby("race_id", sort=False):
+            if str(race_id) not in covered_races:
+                continue
+            selected = (
+                group.sort_values(
+                    ["predicted_rank_in_race", "horse_number"],
+                    kind="stable",
+                )
+                .head(selection_count)["horse_number"]
+                .dropna()
+                .astype(int)
+                .tolist()
+            )
+            if len(selected) != selection_count:
+                continue
+            race_count += 1
+            if not ordered:
+                selected.sort()
+            combination = "-".join(str(number) for number in selected)
+            actual = payouts.loc[
+                (payouts["race_id"].astype(str) == str(race_id))
+                & (payouts["bet_type"] == bet_type)
+            ]
+            actual = actual.loc[
+                actual["combination"].map(
+                    lambda value: _normalize_combination(value, ordered=ordered)
+                )
+                == combination
+            ]
+            if not actual.empty:
+                returns += int(pd.to_numeric(actual["amount"]).sum())
+        stake = race_count * stake_per_bet
+        results[label] = {
+            "races": race_count,
+            "stake_yen": stake,
+            "return_yen": returns,
+            "net_yen": returns - stake,
+            "return_rate": float(returns / stake) if stake else 0.0,
+            "coverage": (
+                float(race_count / prediction_race_count)
+                if prediction_race_count
+                else 0.0
+            ),
+            "status": "computed" if race_count else "no_payout_coverage",
+        }
+    return results
+
+
+def load_payouts_for_races(race_ids) -> pd.DataFrame:
+    race_ids = list(pd.unique(race_ids))
+    if not race_ids:
+        return pd.DataFrame(columns=["race_id", "bet_type", "combination", "amount"])
+    placeholders = ", ".join("?" for _ in race_ids)
+    with _connect_database() as conn:
+        return read_sql_query(
+            f"""
+            SELECT race_id, bet_type, combination, amount
+            FROM payouts
+            WHERE race_id IN ({placeholders})
+            """,
+            conn,
+            params=race_ids,
+        )
+
+
+def walk_forward_evaluate(
+    data: pd.DataFrame,
+    categorical_features: list[str],
+    numeric_features: list[str],
+    folds: int = WALK_FORWARD_FOLDS,
+) -> list[dict]:
+    """Evaluate sequential held-out calendar years using a rolling five-year window."""
+    years = sorted(data["race_date"].dt.year.dropna().unique())
+    test_years = years[-folds:]
+    feature_columns = categorical_features + numeric_features
+    results = []
+    for year in test_years:
+        test = data.loc[data["race_date"].dt.year.eq(year)].copy()
+        if test.empty:
+            continue
+        start = pd.Timestamp(year=year, month=1, day=1)
+        train = data.loc[
+            data["race_date"].lt(start)
+            & data["race_date"].ge(
+                start - pd.DateOffset(years=TRAINING_WINDOW_YEARS)
+            )
+        ].copy()
+        if train.empty or train["target_top3"].nunique() < 2:
+            continue
+        model = build_model(categorical_features, numeric_features)
+        _fit_ranker(model, train, feature_columns)
+        metrics, _ = evaluate_model(model, test, feature_columns)
+        results.append(
+            {
+                "train_until": str(train["race_date"].max().date()),
+                "test_year": int(year),
+                **metrics["race_level_top3"],
+            }
+        )
+    return results
 
 
 def main():
     print("===== データ読み込み =====")
     df, feature_columns, categorical_features, numeric_features = load_data()
+    latest_date = df["race_date"].max().normalize()
+    training_start = latest_date - pd.DateOffset(
+        years=TRAINING_WINDOW_YEARS
+    )
+    df = df.loc[df["race_date"].ge(training_start)].copy()
     (
         train_df,
         validation_df,
@@ -611,11 +808,9 @@ def main():
     )
 
     model = build_model(categorical_features, numeric_features)
-    model.fit(
-        train_df[feature_columns],
-        train_df["target_top3"].astype(int),
-    )
+    _fit_ranker(model, train_df, feature_columns)
 
+    test_payouts = load_payouts_for_races(test_df["race_id"])
     validation_metrics, _ = evaluate_model(
         model,
         validation_df,
@@ -625,39 +820,75 @@ def main():
         model,
         test_df,
         feature_columns,
+        test_payouts,
     )
+    market_feature_names = {"popularity", "odds"}
+    marketless_categorical = [
+        name for name in categorical_features
+        if name not in market_feature_names
+    ]
+    marketless_numeric = [
+        name for name in numeric_features
+        if name not in market_feature_names
+        and not name.startswith(("popularity_", "odds_"))
+    ]
+    marketless_features = marketless_categorical + marketless_numeric
+    marketless_model = build_model(
+        marketless_categorical,
+        marketless_numeric,
+    )
+    _fit_ranker(marketless_model, train_df, marketless_features)
+    marketless_metrics, _ = evaluate_model(
+        marketless_model,
+        test_df,
+        marketless_features,
+        test_payouts,
+    )
+    walk_forward = walk_forward_evaluate(
+        df,
+        marketless_categorical,
+        marketless_numeric,
+    )
+    deployment_start = df["race_date"].max().normalize() - pd.DateOffset(
+        years=TRAINING_WINDOW_YEARS
+    )
+    deployment_df = df.loc[df["race_date"].ge(deployment_start)].copy()
+    market_model = build_model(categorical_features, numeric_features)
+    _fit_ranker(market_model, deployment_df, feature_columns)
+    deployment_model = build_model(
+        marketless_categorical,
+        marketless_numeric,
+    )
+    _fit_ranker(deployment_model, deployment_df, marketless_features)
     metrics["validation"] = validation_metrics
+    metrics["marketless_model"] = marketless_metrics
+    metrics["walk_forward"] = walk_forward
     metrics["split"] = {
         "train_end": str(train_df["race_date"].max().date()),
         "validation_start": str(validation_start.date()),
         "validation_end": str(validation_df["race_date"].max().date()),
         "test_start": str(test_start.date()),
     }
-    metrics["deployment_model_trained_through"] = str(
-        df["race_date"].max().date()
-    )
+    metrics["training_window"] = {
+        "years": TRAINING_WINDOW_YEARS,
+        "start": str(training_start.date()),
+        "end": str(latest_date.date()),
+    }
+    metrics["deployment_model_trained_through"] = str(latest_date.date())
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     model_path = OUTPUT_DIR / "top3_model.joblib"
     metrics_path = OUTPUT_DIR / "metrics.json"
     predictions_path = OUTPUT_DIR / "test_predictions.csv"
-    deployment_model = build_model(
-        categorical_features,
-        numeric_features,
-    )
-    deployment_model.fit(
-        df[feature_columns],
-        df["target_top3"].astype(int),
-    )
     joblib.dump(
         {
             "model": deployment_model,
-            "feature_columns": feature_columns,
-            "feature_columns": feature_columns,
-            "categorical_features": categorical_features,
-            "numeric_features": numeric_features,
-            "target": "finish <= 3",
+            "feature_columns": marketless_features,
+            "categorical_features": marketless_categorical,
+            "numeric_features": marketless_numeric,
+            "target": "race-grouped top-three LambdaRank",
             "prediction_time": "before race start after weigh-in and market ranking",
+            "market_features_excluded": True,
             "excluded_post_event_features": [
                 "finish",
                 "time",
@@ -667,6 +898,17 @@ def main():
             ],
         },
         model_path,
+    )
+    joblib.dump(
+        {
+            "model": market_model,
+            "feature_columns": feature_columns,
+            "categorical_features": categorical_features,
+            "numeric_features": numeric_features,
+            "target": "race-grouped top-three LambdaRank",
+            "market_features_excluded": False,
+        },
+        OUTPUT_DIR / "top3_market_model.joblib",
     )
     metrics_path.write_text(
         json.dumps(metrics, ensure_ascii=False, indent=2),

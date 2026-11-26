@@ -131,6 +131,96 @@ class HistoricalFeatureTests(unittest.TestCase):
         self.assertEqual(result.loc[0, "weather"], "晴")
         self.assertEqual(result.loc[0, "horse_mark"], "(父)")
 
+    def test_recent_form_and_body_weight_trend_use_only_prior_dates(self):
+        horses = pd.DataFrame(
+            [
+                {
+                    "race_id": day,
+                    "race_date": f"2020-01-0{day}",
+                    "finish": finish,
+                    "horse_name": "Horse A",
+                    "jockey": "Jockey A",
+                    "trainer": "Trainer A",
+                    "venue": "Tokyo",
+                    "race_name": "Same Stakes",
+                    "surface": "Turf",
+                    "distance_m": 1600,
+                    "body_weight": 468 + day,
+                    "last_3f": 35.0 + day,
+                    "time": f"1:{30 + day}.0",
+                }
+                for day, finish in enumerate([1, 4, 3, 4, 4, 4], start=1)
+            ]
+            + [
+                {
+                    "race_id": 7,
+                    "race_date": "2020-01-07",
+                    "finish": np.nan,
+                    "horse_name": "Horse A",
+                    "jockey": "Jockey A",
+                    "trainer": "Trainer A",
+                    "venue": "Tokyo",
+                    "race_name": "Same Stakes",
+                    "surface": "Turf",
+                    "distance_m": 1600,
+                    "body_weight": 475,
+                    "last_3f": np.nan,
+                    "time": None,
+                }
+            ]
+        )
+
+        result = model_features.add_historical_performance_features(horses)
+        current = result.iloc[-1]
+
+        self.assertAlmostEqual(
+            current["horse_recent_top3_rate_5"],
+            2 / 15,
+        )
+        self.assertEqual(current["horse_prior_days_since_last_start"], 1)
+        self.assertEqual(current["horse_prior_time_seconds"], 96)
+        self.assertEqual(current["horse_prior_last_3f"], 41.0)
+        self.assertEqual(current["horse_prior_body_weight_change"], 1)
+        self.assertEqual(current["horse_course_distance_prior_starts"], 6)
+        self.assertEqual(current["jockey_horse_prior_starts"], 6)
+
+    def test_race_name_encoding_uses_earlier_races_only(self):
+        history = pd.DataFrame(
+            [
+                {
+                    "race_id": race_id,
+                    "race_date": race_date,
+                    "race_name": "Same Stakes",
+                    "finish": finish,
+                }
+                for race_id, race_date, finishes in (
+                    (1, "2020-01-01", [1, 2, 3, 4]),
+                    (2, "2020-01-02", [1, 2, 3, 4]),
+                )
+                for finish in finishes
+            ]
+        )
+
+        result = model_features.add_race_name_history_features(history)
+
+        self.assertTrue(result.loc[:3, "race_name_prior_starts"].eq(0).all())
+        self.assertTrue(result.loc[4:, "race_name_prior_starts"].eq(4).all())
+        self.assertTrue(
+            result.loc[4:, "race_name_prior_top3_rate"].eq(0.75).all()
+        )
+
+    def test_relative_features_rank_entries_within_each_race(self):
+        entries = pd.DataFrame(
+            {
+                "race_id": [1, 1, 2, 2],
+                "odds": [2.0, 10.0, 3.0, 6.0],
+            }
+        )
+
+        result = model_features.add_race_relative_features(entries, ["odds"])
+
+        self.assertEqual(result["odds_race_percentile"].tolist(), [0.5, 1, 0.5, 1])
+
 
 class TopThreeModelTests(unittest.TestCase):
     def test_loads_optional_fields_and_excludes_result_leakage(self):
@@ -317,6 +407,58 @@ class TopThreeModelTests(unittest.TestCase):
             [1, 2, 3, 4],
         )
 
+    def test_payout_simulation_reports_return_rate_for_win_quinella_and_trio(self):
+        predictions = pd.DataFrame(
+            {
+                "race_id": [1, 1, 1, 1, 2, 2, 2, 2],
+                "horse_number": [3, 1, 2, 4, 3, 1, 2, 4],
+                "predicted_rank_in_race": [1, 2, 3, 4, 1, 2, 3, 4],
+            }
+        )
+        payouts = pd.DataFrame(
+            {
+                "race_id": [1, 1, 1],
+                "bet_type": ["単勝", "馬連", "3連複"],
+                "combination": ["3", "1-3", "1-2-3"],
+                "amount": [150, 400, 1200],
+            }
+        )
+
+        result = train_model.simulate_payout_returns(predictions, payouts)
+
+        self.assertEqual(result["単勝"]["return_rate"], 1.5)
+        self.assertEqual(result["馬連"]["return_rate"], 4.0)
+        self.assertEqual(result["3連複"]["return_rate"], 12.0)
+        self.assertEqual(result["単勝"]["stake_yen"], 100)
+        self.assertEqual(result["単勝"]["coverage"], 0.5)
+
+    def test_evaluates_ranker_scores_and_reports_ndcg(self):
+        class RankingModel:
+            def predict(self, features):
+                return features["feature"].to_numpy()
+
+        test_data = pd.DataFrame(
+            {
+                "race_id": [1, 1, 1, 1],
+                "race_date": pd.to_datetime(["2024-01-01"] * 4),
+                "venue": ["Tokyo"] * 4,
+                "race_name": ["Test"] * 4,
+                "horse_number": [1, 2, 3, 4],
+                "finish": [1, 2, 3, 4],
+                "target_top3": [1, 1, 1, 0],
+                "feature": [4, 3, 2, 1],
+            }
+        )
+
+        metrics, _ = train_model.evaluate_model(
+            RankingModel(),
+            test_data,
+            ["feature"],
+        )
+
+        self.assertEqual(metrics["race_level_top3"]["mean_correct_picks"], 3)
+        self.assertEqual(metrics["race_level_top3"]["ndcg_at_3"], 1)
+
 
 class UpsetFeatureTests(unittest.TestCase):
     def test_chronological_split_falls_back_when_configured_train_period_is_empty(self):
@@ -384,6 +526,31 @@ class UpsetFeatureTests(unittest.TestCase):
             balanced_accuracy_score(labels, probabilities >= 0.5),
         )
 
+    def test_upset_model_sigmoid_calibration_preserves_probability_contract(self):
+        features = pd.DataFrame({"signal": np.linspace(-2, 2, 20)})
+        labels = pd.Series([0] * 10 + [1] * 10)
+        estimator = train_upset_model.make_pipeline([], ["signal"])
+        estimator.fit(features, labels)
+        raw_probability = estimator.predict_proba(features)[:, 1]
+        calibrator = train_upset_model.fit_probability_calibrator(
+            labels,
+            raw_probability,
+        )
+
+        model = train_upset_model.SigmoidCalibratedModel(
+            estimator,
+            calibrator,
+        )
+        probabilities = model.predict_proba(features)
+
+        self.assertEqual(probabilities.shape, (20, 2))
+        self.assertTrue(np.allclose(probabilities.sum(axis=1), 1))
+        self.assertTrue(np.all((probabilities >= 0) & (probabilities <= 1)))
+        self.assertIs(
+            model.named_steps["classifier"],
+            estimator.named_steps["classifier"],
+        )
+
     def test_aggregates_pre_race_field_without_using_current_popularity(self):
         races = pd.DataFrame(
             [
@@ -392,6 +559,7 @@ class UpsetFeatureTests(unittest.TestCase):
                     "race_id": "1",
                     "race_date": pd.Timestamp("2020-01-01"),
                     "venue": "Tokyo",
+                    "race_name": "Same Stakes",
                     "surface": "Turf",
                     "distance_m": 1600,
                     "field_size": 3,
@@ -402,6 +570,7 @@ class UpsetFeatureTests(unittest.TestCase):
                     "race_id": "2",
                     "race_date": pd.Timestamp("2020-01-02"),
                     "venue": "Tokyo",
+                    "race_name": "Same Stakes",
                     "surface": "Turf",
                     "distance_m": 1600,
                     "field_size": 3,
@@ -442,13 +611,18 @@ class UpsetFeatureTests(unittest.TestCase):
 
         self.assertIn("field_body_weight_mean", numeric)
         self.assertIn("field_jockey_prior_top3_rate_mean", numeric)
+        self.assertIn("race_name_prior_upset_rate", numeric)
         self.assertIn("venue", categorical)
+        self.assertNotIn("race_name", categorical)
         self.assertNotIn("popularity", categorical + numeric)
         self.assertNotIn("odds", categorical + numeric)
         self.assertNotIn("finish", categorical + numeric)
         self.assertAlmostEqual(featured.loc[0, "field_body_weight_mean"], 472)
         self.assertEqual(featured.loc[0, "field_horse_prior_starts_mean"], 0)
         self.assertGreater(featured.loc[1, "field_horse_prior_starts_mean"], 0)
+        self.assertEqual(featured.loc[0, "race_name_prior_races"], 0)
+        self.assertEqual(featured.loc[1, "race_name_prior_races"], 1)
+        self.assertEqual(featured.loc[1, "race_name_prior_upset_rate"], 1)
 
 
 if __name__ == "__main__":

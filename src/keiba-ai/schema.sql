@@ -1,61 +1,87 @@
 PRAGMA foreign_keys = ON;
 
 CREATE TABLE IF NOT EXISTS races (
-    race_id TEXT PRIMARY KEY,
-    race_date TEXT NOT NULL,
-    venue TEXT NOT NULL,
-    race_number INTEGER NOT NULL,
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    url TEXT UNIQUE,
+    race_date TEXT,
+    venue TEXT,
     race_name TEXT,
-    surface TEXT,
     distance_m INTEGER,
-    going TEXT,
-    field_size INTEGER,
-    trifecta_payout_yen INTEGER,
-    source_name TEXT NOT NULL,
-    imported_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    surface TEXT,
+    direction TEXT,
+    crawled_at TEXT,
+    race_number INTEGER,
+    start_time TEXT,
+    weather TEXT,
+    turf_condition TEXT,
+    dirt_condition TEXT,
+    race_grade TEXT,
+    race_conditions TEXT
 );
 
 CREATE TABLE IF NOT EXISTS horses (
-    horse_id TEXT PRIMARY KEY,
-    horse_name TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS entries (
-    race_id TEXT NOT NULL,
-    horse_id TEXT NOT NULL,
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    race_id INTEGER NOT NULL,
+    finish INTEGER,
+    frame INTEGER,
     horse_number INTEGER,
-    frame_number INTEGER,
-    jockey_name TEXT,
-    carried_weight REAL,
-    win_odds REAL,
+    horse_name TEXT,
+    sex_age TEXT,
+    weight REAL,
+    jockey TEXT,
+    time TEXT,
+    margin TEXT,
+    last_3f REAL,
+    body_weight INTEGER,
+    weight_change INTEGER,
+    trainer TEXT,
     popularity INTEGER,
-    finish_position INTEGER,
-    PRIMARY KEY (race_id, horse_id),
-    FOREIGN KEY (race_id) REFERENCES races(race_id),
-    FOREIGN KEY (horse_id) REFERENCES horses(horse_id)
+    odds REAL,
+    horse_mark TEXT,
+    corner_order TEXT,
+    horse_url TEXT,
+    jockey_url TEXT,
+    trainer_url TEXT,
+    source_fields TEXT
 );
 
-CREATE TABLE IF NOT EXISTS odds_snapshots (
-    race_id TEXT NOT NULL,
-    horse_id TEXT NOT NULL,
-    captured_at TEXT NOT NULL,
-    win_odds REAL,
-    popularity INTEGER,
-    PRIMARY KEY (race_id, horse_id, captured_at),
-    FOREIGN KEY (race_id, horse_id)
-        REFERENCES entries(race_id, horse_id)
+CREATE TABLE IF NOT EXISTS payouts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    race_id INTEGER NOT NULL,
+    bet_type TEXT,
+    combination TEXT,
+    amount INTEGER,
+    popularity INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS crawl_errors (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    url TEXT,
+    error TEXT,
+    occurred_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS crawl_retry_queue (
+    url TEXT PRIMARY KEY,
+    retry_count INTEGER NOT NULL DEFAULT 0,
+    next_retry_at TEXT NOT NULL,
+    last_error TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    resolved_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS predictions (
     prediction_id INTEGER PRIMARY KEY AUTOINCREMENT,
-    race_id TEXT NOT NULL,
+    race_id INTEGER NOT NULL,
     predicted_at TEXT NOT NULL,
-    cutoff_at TEXT NOT NULL,
-    chaos_probability REAL NOT NULL,
+    cutoff_at TEXT,
+    chaos_probability REAL NOT NULL DEFAULT 0,
     uncertainty_score REAL,
-    decision TEXT NOT NULL,
+    decision TEXT NOT NULL DEFAULT 'unavailable',
     model_version TEXT NOT NULL,
-    FOREIGN KEY (race_id) REFERENCES races(race_id)
+    top3_predictions TEXT,
+    upset_factors TEXT,
+    evaluated_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS model_evaluations (
@@ -70,11 +96,30 @@ CREATE TABLE IF NOT EXISTS model_evaluations (
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE INDEX IF NOT EXISTS idx_races_date
-    ON races(race_date);
+CREATE TABLE IF NOT EXISTS prediction_evaluations (
+    evaluation_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    model_version TEXT NOT NULL,
+    evaluated_at TEXT NOT NULL,
+    test_from TEXT NOT NULL,
+    test_until TEXT NOT NULL,
+    evaluated_races INTEGER NOT NULL,
+    mean_correct_picks REAL NOT NULL,
+    precision_at_3 REAL NOT NULL,
+    win_return_rate REAL,
+    quinella_return_rate REAL,
+    trio_return_rate REAL,
+    upset_races INTEGER NOT NULL DEFAULT 0,
+    upset_brier_score REAL,
+    upset_top_10pct_rate REAL
+);
 
-CREATE INDEX IF NOT EXISTS idx_entries_horse
-    ON entries(horse_id);
-
-CREATE INDEX IF NOT EXISTS idx_predictions_race
-    ON predictions(race_id, predicted_at);
+CREATE INDEX IF NOT EXISTS idx_races_date ON races(race_date);
+CREATE INDEX IF NOT EXISTS idx_horses_race ON horses(race_id);
+CREATE INDEX IF NOT EXISTS idx_payouts_race ON payouts(race_id);
+CREATE INDEX IF NOT EXISTS idx_crawl_retry_due
+    ON crawl_retry_queue(next_retry_at);
+CREATE INDEX IF NOT EXISTS idx_predictions_race ON predictions(race_id);
+CREATE INDEX IF NOT EXISTS idx_predictions_time
+    ON predictions(predicted_at);
+CREATE INDEX IF NOT EXISTS idx_prediction_evaluations_model
+    ON prediction_evaluations(model_version);

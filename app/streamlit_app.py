@@ -16,7 +16,6 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from scripts.model_features import make_prediction_feature_rows
-from scripts.train_upset_model import add_race_features
 from scripts.database import (
     connect_db as open_database,
     execute as db_execute,
@@ -61,8 +60,14 @@ UPSET_METRICS_PATH = (
 )
 
 
-@st.cache_data(ttl=30)
-def load_races():
+@st.cache_data(ttl=300)
+def load_races(
+    race_date="すべて",
+    venue="すべて",
+    race_number="すべて",
+    race_name="",
+    limit=5000,
+):
     """レース一覧を取得する。"""
     with get_connection() as conn:
         columns = table_columns(conn, "races")
@@ -81,16 +86,73 @@ def load_races():
             else f'NULL AS "{column}"'
             for column in optional
         )
+        conditions = []
+        params = {"limit": int(limit)}
+        if race_date != "すべて":
+            conditions.append("race_date = :race_date")
+            params["race_date"] = race_date
+        if venue != "すべて":
+            conditions.append("venue = :venue")
+            params["venue"] = venue
+        if race_number != "すべて":
+            conditions.append("race_number = :race_number")
+            params["race_number"] = int(race_number)
+        if race_name.strip():
+            conditions.append(
+                        "LOWER(COALESCE(race_name, '')) LIKE :race_name ESCAPE '\\'"
+            )
+            params["race_name"] = (
+                "%"
+                + race_name.strip().lower().replace("%", "\\%").replace("_", "\\_")
+                + "%"
+            )
+        where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
         return read_sql_query(
             f"""
             SELECT
                 id, url, race_date, venue, race_name, distance_m,
                 surface, direction, {extra_columns}
             FROM races
+            {where}
             ORDER BY race_date DESC, venue, id
+            LIMIT :limit
             """,
             conn,
+            params=params,
         )
+
+
+@st.cache_data(ttl=300)
+def load_race_filter_options():
+    with get_connection() as conn:
+        dates = read_sql_query(
+            """
+            SELECT DISTINCT race_date
+            FROM races
+            WHERE race_date IS NOT NULL
+            ORDER BY race_date DESC
+            """,
+            conn,
+        )["race_date"].astype(str).tolist()
+        venues = read_sql_query(
+            """
+            SELECT DISTINCT venue
+            FROM races
+            WHERE venue IS NOT NULL
+            ORDER BY venue
+            """,
+            conn,
+        )["venue"].astype(str).tolist()
+        numbers = read_sql_query(
+            """
+            SELECT DISTINCT race_number
+            FROM races
+            WHERE race_number IS NOT NULL
+            ORDER BY race_number
+            """,
+            conn,
+        )["race_number"].tolist()
+    return dates, venues, numbers
 
 
 def get_connection():
@@ -135,45 +197,29 @@ def load_horses(race_id):
         )
 
 
-@st.cache_data(ttl=300)
-def load_historical_horses():
-    """日付をまたいだ過去成績の特徴量作成用データを取得する。"""
+@st.cache_data(ttl=30)
+def load_saved_prediction(race_id):
     with get_connection() as conn:
+        columns = table_columns(conn, "predictions")
+        required = {"race_id", "predicted_at", "model_version", "top3_predictions"}
+        missing = required - columns
+        if missing:
+            raise ValueError(
+                f"predictions テーブルに列がありません: {sorted(missing)}"
+            )
         return read_sql_query(
             """
             SELECT
-                h.race_id, r.race_date, h.finish, h.horse_name,
-                h.jockey, h.trainer
-            FROM horses h
-            JOIN races r ON r.id = h.race_id
-            WHERE r.race_date IS NOT NULL
+                predicted_at, model_version, top3_predictions,
+                chaos_probability, decision, upset_factors
+            FROM predictions
+            WHERE race_id = :race_id
+            ORDER BY predicted_at DESC
+            LIMIT 1
             """,
             conn,
+            params={"race_id": int(race_id)},
         )
-
-
-@st.cache_data(ttl=300)
-def load_upset_feature_rows():
-    """波乱モデルの学習時と同じ方法で、全レースの特徴量を作る。"""
-    with get_connection() as conn:
-        races = read_sql_query("SELECT * FROM races", conn)
-        horses = read_sql_query("SELECT * FROM horses", conn)
-
-    if races.empty or horses.empty:
-        return pd.DataFrame()
-
-    races["race_date"] = pd.to_datetime(races["race_date"], errors="coerce")
-    races["id"] = races["id"].astype(str)
-    horses["race_id"] = horses["race_id"].astype(str)
-
-    race_frame = races.copy()
-    race_frame["race_id"] = race_frame["id"]
-    field_sizes = horses.groupby("race_id").size()
-    race_frame["field_size"] = (
-        race_frame["race_id"].map(field_sizes).fillna(0).astype(int)
-    )
-    features, _, _ = add_race_features(race_frame, races, horses)
-    return features
 
 
 @st.cache_data(ttl=30)
@@ -225,9 +271,9 @@ def load_prediction_model():
         model = saved
         feature_columns = None
 
-    if not hasattr(model, "predict_proba"):
+    if not hasattr(model, "predict_proba") and not hasattr(model, "predict"):
         raise ValueError(
-            f"モデルが predict_proba() に対応していません: {type(model)}"
+            f"モデルが predict() に対応していません: {type(model)}"
         )
     if feature_columns is None:
         model_features = getattr(model, "feature_names_in_", None)
@@ -291,10 +337,16 @@ def predict_race(
     features = prepare_prediction_features(
         race, horses, historical_horses, feature_columns
     )
-    classes = list(model.classes_)
-    if 1 not in classes:
-        raise ValueError(f"モデルにクラス1がありません。モデルのクラス: {classes}")
-    scores = model.predict_proba(features)[:, classes.index(1)]
+    if hasattr(model, "predict_proba"):
+        classes = list(model.classes_)
+        if 1 not in classes:
+            raise ValueError(
+                f"モデルにクラス1がありません。モデルのクラス: {classes}"
+            )
+        scores = model.predict_proba(features)[:, classes.index(1)]
+    else:
+        scores = np.asarray(model.predict(features), dtype=float)
+        scores = pd.Series(scores).rank(method="average", pct=True).to_numpy()
 
     result = horses[
         [
@@ -403,6 +455,22 @@ def feature_label(feature_name):
         "horse_prior_starts": "馬の過去出走数",
         "horse_prior_win_rate": "馬の過去勝率",
         "horse_prior_top3_rate": "馬の過去3着内率",
+        "horse_recent_win_rate_5": "馬の直近5走勝率（新しい走りを重視）",
+        "horse_recent_top3_rate_5": "馬の直近5走3着内率（新しい走りを重視）",
+        "horse_prior_days_since_last_start": "前走からの日数",
+        "horse_prior_time_seconds": "前走タイム（秒）",
+        "horse_prior_last_3f": "前走の上がり3F",
+        "horse_prior_last_body_weight": "前走の馬体重",
+        "horse_prior_body_weight_change": "馬体重の前走比",
+        "horse_surface_prior_top3_rate": "馬の同馬場3着内率",
+        "horse_course_distance_prior_top3_rate": "馬の同コース・距離3着内率",
+        "horse_course_distance_prior_starts": "馬の同コース・距離出走数",
+        "jockey_horse_prior_top3_rate": "騎手と馬の組合せ3着内率",
+        "jockey_horse_prior_starts": "騎手と馬の組合せ出走数",
+        "race_name_prior_top3_rate": "レース名の過去3着内率",
+        "race_name_prior_starts": "レース名の過去出走頭数",
+        "race_name_prior_upset_rate": "レース名の過去波乱率",
+        "race_name_prior_races": "レース名の過去開催数",
         "jockey_prior_starts": "騎手の過去出走数",
         "jockey_prior_win_rate": "騎手の過去勝率",
         "jockey_prior_top3_rate": "騎手の過去3着内率",
@@ -489,20 +557,14 @@ def filter_races(
 
 def race_filter_controls(races, key_prefix):
     """レース一覧用の開催日・競馬場・レース番号・レース名を表示する。"""
-    dates = sorted(
-        races["race_date"].dropna().astype(str).unique().tolist(),
-        reverse=True,
-    )
-    venues = sorted(
-        races["venue"].dropna().astype(str).unique().tolist()
-    )
-    race_numbers = sorted(
-        pd.to_numeric(races["race_number"], errors="coerce")
-        .dropna()
-        .astype(int)
-        .unique()
-        .tolist()
-    )
+    dates, venues, race_numbers = load_race_filter_options()
+    race_numbers = [
+        int(value)
+        for value in pd.to_numeric(
+            pd.Series(race_numbers),
+            errors="coerce",
+        ).dropna().unique()
+    ]
     date_col, venue_col, number_col, name_col = st.columns([1, 1, 1, 2])
     with date_col:
         selected_date = st.selectbox(
@@ -532,8 +594,7 @@ def race_filter_controls(races, key_prefix):
             key=f"{key_prefix}_keyword",
         )
 
-    filtered = filter_races(
-        races,
+    filtered = load_races(
         race_date=selected_date,
         venue=selected_venue,
         race_number=selected_race_number,
@@ -697,6 +758,12 @@ if selection_races.empty:
         "対象レースは全件から選択できます。"
     )
     selection_races = races
+race_labels.update(
+    {
+        int(row["id"]): race_label(row)
+        for _, row in selection_races.iterrows()
+    }
+)
 race_ids = selection_races["id"].astype(int).tolist()
 if (
     "selected_race_id" not in st.session_state
@@ -710,8 +777,8 @@ selected_race_id = st.selectbox(
     format_func=lambda race_id: race_labels[race_id],
     key="selected_race_id",
 )
-selected_race = races.loc[
-    races["id"].astype(int) == int(selected_race_id)
+selected_race = selection_races.loc[
+    selection_races["id"].astype(int) == int(selected_race_id)
 ].iloc[0]
 
 basic1, basic2, basic3 = st.columns(3)
@@ -770,74 +837,82 @@ else:
         hide_index=True,
     )
 
-if not MODEL_PATH.exists():
-    st.error(f"上位3頭予測モデルが見つかりません: {MODEL_PATH}")
-elif horses.empty:
+if horses.empty:
     st.warning("このレースには出走馬データがありません。予測できません。")
 else:
     try:
-        model, feature_columns = load_prediction_model()
-        prediction = predict_race(
-            selected_race,
-            horses,
-            model,
-            feature_columns,
-            load_historical_horses(),
-        )
-        if prediction.empty:
-            st.info("予測対象の出走馬がありません。")
+        saved_predictions = load_saved_prediction(selected_race_id)
+        if saved_predictions.empty:
+            st.info(
+                "週次ジョブの予測結果がまだありません。"
+                "出走表の更新後に週次ジョブを実行してください。"
+            )
         else:
-            top3 = prediction.head(3)
+            saved = saved_predictions.iloc[0]
+            ranked = sorted(
+                json.loads(saved["top3_predictions"]),
+                key=lambda item: item["rank"],
+            )
+            top3 = ranked[:3]
             top_columns = st.columns(len(top3))
-            for rank, (_, horse) in enumerate(top3.iterrows(), start=1):
+            for rank, horse in enumerate(top3, start=1):
                 with top_columns[rank - 1]:
                     st.metric(
-                        f"AI評価{rank}番手｜{horse['馬名']}",
-                        f"{horse['予測スコア']:.1f} 点",
-                        f"馬番 {horse['馬番']}",
+                        f"AI評価{rank}番手｜{horse['horse_name'] or '不明'}",
+                        f"{horse['score']:.1f} 点",
+                        f"馬番 {horse['horse_number']}",
                     )
-                    jockey = escape(str(display_value(horse["騎手"])))
+                    jockey = escape(str(display_value(horse["jockey"])))
                     st.markdown(
                         f'<p class="jockey-name">騎手：{jockey}</p>',
                         unsafe_allow_html=True,
                     )
+            st.caption(
+                f"予測時刻: {saved['predicted_at']} / "
+                f"モデル: {saved['model_version']}"
+            )
     except (FileNotFoundError, ValueError, KeyError, TypeError) as exc:
-        st.error(f"上位3頭の予測に失敗しました: {exc}")
-    except Exception as exc:
-        st.error(f"上位3頭の予測中にエラーが発生しました: {type(exc).__name__}: {exc}")
+        st.error(f"保存済み上位3頭予測の読み込みに失敗しました: {exc}")
+    except (SQLAlchemyError, pd.errors.DatabaseError) as exc:
+        st.error(f"予測結果のDB読込に失敗しました: {exc}")
 
 
 # ② 波乱予想
 st.header("② このレースは荒れる？")
-if not UPSET_MODEL_PATH.exists():
-    st.error(f"波乱予測モデルが見つかりません: {UPSET_MODEL_PATH}")
-elif horses.empty:
+if horses.empty:
     st.info("出走馬データがないため、波乱予測は表示できません。")
 else:
     try:
-        upset_model, upset_threshold = load_upset_prediction_model()
-        upset_features = load_upset_feature_rows()
-        probability, is_upset, factors = predict_upset_race(
-            selected_race_id,
-            upset_features,
-            upset_model,
-            upset_threshold,
-        )
-        result1, result2 = st.columns(2)
-        result1.metric("波乱確率", f"{probability:.1%}")
-        result2.metric(
-            "モデル判定",
-            "荒れる予想" if is_upset else "荒れにくい予想",
-        )
-        if factors:
-            st.markdown("**予測に影響した特徴量**")
-            st.dataframe(
-                pd.DataFrame(factors),
-                width="stretch",
-                hide_index=True,
-            )
+        saved_predictions = load_saved_prediction(selected_race_id)
+        if saved_predictions.empty:
+            st.info("保存済みの波乱予測はありません。")
         else:
-            st.info("この判定を押し上げる／押し下げる特徴量は特定できませんでした。")
+            saved = saved_predictions.iloc[0]
+            probability = float(saved["chaos_probability"])
+            result1, result2 = st.columns(2)
+            result1.metric("波乱確率", f"{probability:.1%}")
+            result2.metric(
+                "モデル判定",
+                "荒れる予想" if saved["decision"] == "upset" else "荒れにくい予想",
+            )
+            factors = [
+                {
+                    "特徴量": feature_label(item["feature"]),
+                    "寄与度（log-odds）": f"{item['contribution']:+.2f}",
+                }
+                for item in json.loads(saved["upset_factors"] or "[]")
+            ]
+            if factors:
+                st.markdown("**予測に影響した特徴量**")
+                st.dataframe(
+                    pd.DataFrame(factors),
+                    width="stretch",
+                    hide_index=True,
+                )
+            else:
+                st.info(
+                    "この判定を押し上げる／押し下げる特徴量は特定できませんでした。"
+                )
     except (FileNotFoundError, ValueError, KeyError, TypeError) as exc:
         st.error(f"波乱予測に失敗しました: {exc}")
     except Exception as exc:
@@ -848,6 +923,12 @@ else:
 with st.expander("③ レース検索・データベースの内容", expanded=False):
     st.write("レースを検索し、選択中のレースの出走馬・結果・払戻を確認できます。")
     filtered = race_filter_controls(races, "race_search")
+    race_labels.update(
+        {
+            int(row["id"]): race_label(row)
+            for _, row in filtered.iterrows()
+        }
+    )
     display_races = filtered[
         ["race_date", "venue", "race_name", "surface", "distance_m"]
     ].rename(
@@ -993,9 +1074,9 @@ with st.expander("④ 学習に使った特徴量一覧", expanded=False):
 
 if st.button("🔄 データを再読み込み"):
     load_races.clear()
+    load_race_filter_options.clear()
     load_horses.clear()
-    load_historical_horses.clear()
-    load_upset_feature_rows.clear()
+    load_saved_prediction.clear()
     load_payouts.clear()
     load_prediction_model.clear()
     load_upset_prediction_model.clear()
