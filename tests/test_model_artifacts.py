@@ -18,7 +18,7 @@ class ModelArtifactDownloadTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
-            download_model_artifacts(root)
+            self.assertTrue(download_model_artifacts(root))
 
             for asset_name, relative_path in MODEL_ARTIFACTS.items():
                 self.assertEqual(
@@ -49,6 +49,30 @@ class ModelArtifactDownloadTests(unittest.TestCase):
 
             with self.assertRaisesRegex(RuntimeError, "download failed"):
                 download_model_artifacts(root)
+
+            for relative_path in MODEL_ARTIFACTS.values():
+                self.assertEqual(
+                    (root / relative_path).read_bytes(),
+                    b"old",
+                )
+            self.assertFalse(list(root.rglob("*.tmp")))
+
+    @patch("scripts.model_artifacts.requests.get")
+    def test_missing_release_does_not_replace_cached_artifacts(self, get):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            for relative_path in MODEL_ARTIFACTS.values():
+                destination = root / relative_path
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_bytes(b"old")
+
+            response = Mock(status_code=404)
+            get.side_effect = [
+                Mock(status_code=200, content=b"new"),
+                response,
+            ]
+
+            self.assertFalse(download_model_artifacts(root))
 
             for relative_path in MODEL_ARTIFACTS.values():
                 self.assertEqual(

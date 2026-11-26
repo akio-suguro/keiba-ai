@@ -16,11 +16,15 @@ MODEL_ARTIFACTS = {
 }
 
 
+class ModelReleaseUnavailableError(RuntimeError):
+    """Raised when a caller requires model artifacts but no release exists."""
+
+
 def download_model_artifacts(
     cache_dir: Path,
     *,
     timeout: int = 30,
-) -> None:
+) -> bool:
     """Download one published release's model artifacts to the project."""
     downloads: list[tuple[Path, Path]] = []
     try:
@@ -29,6 +33,8 @@ def download_model_artifacts(
                 f"{RELEASE_DOWNLOAD_BASE}/{asset_name}",
                 timeout=timeout,
             )
+            if response.status_code == 404:
+                return False
             response.raise_for_status()
             if not response.content:
                 raise RuntimeError(
@@ -49,6 +55,7 @@ def download_model_artifacts(
 
         for temporary_path, destination in downloads:
             temporary_path.replace(destination)
+        return True
     finally:
         for temporary_path, _ in downloads:
             temporary_path.unlink(missing_ok=True)

@@ -8,6 +8,7 @@ from pathlib import Path
 import joblib
 import numpy as np
 import pandas as pd
+import requests
 import streamlit as st
 from streamlit.errors import StreamlitSecretNotFoundError
 from sqlalchemy.exc import SQLAlchemyError
@@ -23,7 +24,10 @@ from scripts.database import (
     read_sql_query,
     table_columns,
 )
-from scripts.model_artifacts import download_model_artifacts
+from scripts.model_artifacts import (
+    ModelReleaseUnavailableError,
+    download_model_artifacts,
+)
 
 
 st.set_page_config(
@@ -257,13 +261,13 @@ def get_database_counts():
 
 @st.cache_data(ttl=3600)
 def refresh_model_artifacts():
-    download_model_artifacts(MODEL_CACHE_DIR)
-    return True
+    return download_model_artifacts(MODEL_CACHE_DIR)
 
 
 @st.cache_resource(ttl=3600)
 def load_prediction_model():
-    refresh_model_artifacts()
+    if not refresh_model_artifacts():
+        raise ModelReleaseUnavailableError("No published model release is available.")
     if not MODEL_PATH.exists():
         raise FileNotFoundError(f"学習済みモデルが見つかりません: {MODEL_PATH}")
     saved = joblib.load(MODEL_PATH)
@@ -297,7 +301,8 @@ def load_prediction_model():
 
 @st.cache_resource(ttl=3600)
 def load_upset_prediction_model():
-    refresh_model_artifacts()
+    if not refresh_model_artifacts():
+        raise ModelReleaseUnavailableError("No published model release is available.")
     if not UPSET_MODEL_PATH.exists():
         raise FileNotFoundError(
             f"波乱予測モデルが見つかりません: {UPSET_MODEL_PATH}"
@@ -1075,6 +1080,14 @@ with st.expander("④ 学習に使った特徴量一覧", expanded=False):
             "波乱予想は現在レースの人気・オッズを使用しません。"
             "両モデルの過去成績特徴量は、同日結果を含めず以前の開催日のみから計算します。"
         )
+    except ModelReleaseUnavailableError:
+        st.info(
+            "モデルの公開 Release がまだありません。"
+            "Actions の「Weekly Keiba Update」で Run workflow を実行し、"
+            "初回のモデル公開を行ってください。"
+        )
+    except requests.RequestException as exc:
+        st.warning(f"モデルファイルを取得できないため特徴量を表示できません: {exc}")
     except (FileNotFoundError, ValueError, KeyError, TypeError) as exc:
         st.error(f"特徴量一覧を読み込めませんでした: {exc}")
 
