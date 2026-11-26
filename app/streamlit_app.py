@@ -2,6 +2,7 @@ from html import escape
 import json
 import os
 import sys
+import tempfile
 from pathlib import Path
 
 import joblib
@@ -22,6 +23,7 @@ from scripts.database import (
     read_sql_query,
     table_columns,
 )
+from scripts.model_artifacts import download_model_artifacts
 
 
 st.set_page_config(
@@ -51,13 +53,10 @@ def configure_database_url() -> None:
 configure_database_url()
 
 DB_PATH = PROJECT_ROOT / "data" / "keiba.db"
-MODEL_PATH = PROJECT_ROOT / "data" / "model" / "top3_model.joblib"
-UPSET_MODEL_PATH = (
-    PROJECT_ROOT / "data" / "model" / "upset" / "upset_model.joblib"
-)
-UPSET_METRICS_PATH = (
-    PROJECT_ROOT / "data" / "model" / "upset" / "metrics.json"
-)
+MODEL_CACHE_DIR = Path(tempfile.gettempdir()) / "keiba-ai" / "models"
+MODEL_PATH = MODEL_CACHE_DIR / "top3_model.joblib"
+UPSET_MODEL_PATH = MODEL_CACHE_DIR / "upset_model.joblib"
+UPSET_METRICS_PATH = MODEL_CACHE_DIR / "upset_metrics.json"
 
 
 @st.cache_data(ttl=300)
@@ -256,8 +255,15 @@ def get_database_counts():
     return race_count, horse_count, payout_count
 
 
-@st.cache_resource
+@st.cache_data(ttl=3600)
+def refresh_model_artifacts():
+    download_model_artifacts(MODEL_CACHE_DIR)
+    return True
+
+
+@st.cache_resource(ttl=3600)
 def load_prediction_model():
+    refresh_model_artifacts()
     if not MODEL_PATH.exists():
         raise FileNotFoundError(f"学習済みモデルが見つかりません: {MODEL_PATH}")
     saved = joblib.load(MODEL_PATH)
@@ -289,8 +295,9 @@ def load_prediction_model():
     return model, list(feature_columns)
 
 
-@st.cache_resource
+@st.cache_resource(ttl=3600)
 def load_upset_prediction_model():
+    refresh_model_artifacts()
     if not UPSET_MODEL_PATH.exists():
         raise FileNotFoundError(
             f"波乱予測モデルが見つかりません: {UPSET_MODEL_PATH}"
@@ -1078,6 +1085,7 @@ if st.button("🔄 データを再読み込み"):
     load_horses.clear()
     load_saved_prediction.clear()
     load_payouts.clear()
+    refresh_model_artifacts.clear()
     load_prediction_model.clear()
     load_upset_prediction_model.clear()
     st.rerun()
