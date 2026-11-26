@@ -1,8 +1,11 @@
 import sqlite3
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 
+import joblib
 import numpy as np
 import pandas as pd
 from sklearn.metrics import balanced_accuracy_score
@@ -550,6 +553,32 @@ class UpsetFeatureTests(unittest.TestCase):
             model.named_steps["classifier"],
             estimator.named_steps["classifier"],
         )
+        self.assertEqual(
+            type(model).__module__,
+            "scripts.model_calibration",
+        )
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            model_path = Path(temporary_directory) / "upset_model.joblib"
+            joblib.dump(model, model_path)
+            scripts_directory = (
+                Path(__file__).resolve().parents[1] / "scripts"
+            )
+            subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    (
+                        "import joblib, sys; "
+                        "import train_upset_model; "
+                        "joblib.load(sys.argv[1])"
+                    ),
+                    str(model_path),
+                ],
+                cwd=scripts_directory,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
 
     def test_aggregates_pre_race_field_without_using_current_popularity(self):
         races = pd.DataFrame(

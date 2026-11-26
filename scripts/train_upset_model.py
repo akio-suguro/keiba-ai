@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -43,8 +44,13 @@ else:
 
 if __package__:
     from .database import connect_db, read_sql_query
+    from .model_calibration import SigmoidCalibratedModel
 else:
+    project_root = str(Path(__file__).resolve().parents[1])
+    if project_root not in sys.path:
+        sys.path.insert(0, project_root)
     from database import connect_db, read_sql_query
+    from scripts.model_calibration import SigmoidCalibratedModel
 
 
 # ============================================================
@@ -74,33 +80,6 @@ UPSET_POPULARITY_THRESHOLD = 7
 RANDOM_STATE = 42
 TRAINING_WINDOW_YEARS = 5
 FEATURE_HISTORY_YEARS = 10
-
-
-class SigmoidCalibratedModel:
-    """Apply a chronological Platt calibration to a fitted estimator."""
-
-    def __init__(self, estimator, calibrator):
-        self.estimator = estimator
-        self.calibrator = calibrator
-
-    @property
-    def named_steps(self):
-        return self.estimator.named_steps
-
-    @property
-    def feature_names_in_(self):
-        return self.estimator.feature_names_in_
-
-    @property
-    def classes_(self):
-        return self.estimator.classes_
-
-    def predict_proba(self, features):
-        raw_probability = self.estimator.predict_proba(features)[:, 1]
-        raw_probability = np.clip(raw_probability, 1e-6, 1 - 1e-6)
-        logits = np.log(raw_probability / (1 - raw_probability)).reshape(-1, 1)
-        calibrated = self.calibrator.predict_proba(logits)[:, 1]
-        return np.column_stack((1 - calibrated, calibrated))
 
 
 def fit_probability_calibrator(
