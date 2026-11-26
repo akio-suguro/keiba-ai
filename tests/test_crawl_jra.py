@@ -117,7 +117,7 @@ class JraSearchTests(unittest.TestCase):
                 crawl_jra.fetch_jra_search_page("pw01skl10202610/C3")
 
     def test_current_month_parameter_error_falls_back_to_year_index(self):
-        today = date.today()
+        today = crawl_jra.jra_today()
         current_day_cname = (
             f"pw01srl1005{today.year}0401{today:%Y%m%d}/8F"
         )
@@ -222,7 +222,7 @@ class JraSearchTests(unittest.TestCase):
         )
 
     def test_current_month_without_completed_races_is_not_an_error(self):
-        today = date.today()
+        today = crawl_jra.jra_today()
         with (
             patch.object(
                 crawl_jra,
@@ -586,7 +586,7 @@ class SaveRaceDeduplicationTests(unittest.TestCase):
 
 class UnconfirmedRaceTests(unittest.TestCase):
     def test_unconfirmed_current_day_result_is_skipped_without_error_record(self):
-        today = date.today()
+        today = crawl_jra.jra_today()
         cname = (
             f"pw01sde1006{today.year}010101{today:%Y%m%d}/6B"
         )
@@ -616,7 +616,7 @@ class UnconfirmedRaceTests(unittest.TestCase):
 
 class MainCrawlerTests(unittest.TestCase):
     def test_main_crawls_all_result_links_discovered_for_a_month(self):
-        year = date.today().year - 1
+        year = crawl_jra.jra_today().year - 1
         day_cname = f"pw01srl1006{year}0101{year}0105/DA"
         race_cname = f"pw01sde1006{year}010101{year}0105/6B"
         checkdigits = {
@@ -679,7 +679,7 @@ class MainCrawlerTests(unittest.TestCase):
         scanned_months = []
         expected_newest_months = [
             (2026, month)
-            for month in range(date.today().month, 0, -1)
+            for month in range(crawl_jra.jra_today().month, 0, -1)
         ] + [(2025, month) for month in range(12, 0, -1)]
 
         def record_month(year, month, *_args, **_kwargs):
@@ -712,7 +712,7 @@ class MainCrawlerTests(unittest.TestCase):
         self.assertEqual(scanned_months, expected_newest_months)
 
     def test_main_can_limit_crawl_to_current_month(self):
-        today = date.today()
+        today = crawl_jra.jra_today()
         scanned_months = []
 
         def record_month(year, month, *_args, **_kwargs):
@@ -753,7 +753,7 @@ class MainCrawlerTests(unittest.TestCase):
         discover_entries.assert_called_once_with(today=today)
 
     def test_current_month_crawls_published_future_entries(self):
-        today = date.today()
+        today = crawl_jra.jra_today()
         future_date = today + timedelta(days=1)
         entry_cname = (
             f"pw01dde0105{today.year}010101"
@@ -802,7 +802,7 @@ class MainCrawlerTests(unittest.TestCase):
                     "DB_PATH",
                     Path(temp_dir) / "test.sqlite",
                 ),
-                patch.object(crawl_jra, "YEARS", [date.today().year]),
+                patch.object(crawl_jra, "YEARS", [crawl_jra.jra_today().year]),
                 patch.object(
                     crawl_jra,
                     "database_size_bytes",
@@ -817,7 +817,7 @@ class MainCrawlerTests(unittest.TestCase):
         checkdigits.assert_not_called()
 
     def test_current_month_crawl_ignores_database_size_limit(self):
-        today = date.today()
+        today = crawl_jra.jra_today()
         yymm = f"{today.year % 100:02d}{today.month:02d}"
         with tempfile.TemporaryDirectory() as temp_dir:
             with (
@@ -859,7 +859,7 @@ class MainCrawlerTests(unittest.TestCase):
         database_size_bytes.assert_not_called()
 
     def test_main_treats_current_month_parameter_error_as_waiting(self):
-        today = date.today()
+        today = crawl_jra.jra_today()
         checkdigits = {
             f"{today.year % 100:02d}{month:02d}": "3F"
             for month in range(1, today.month + 1)
@@ -902,7 +902,7 @@ class MainCrawlerTests(unittest.TestCase):
         self.assertEqual(error_count, 0)
 
     def test_main_stops_after_a_race_reaches_database_size_limit(self):
-        year = date.today().year - 1
+        year = crawl_jra.jra_today().year - 1
         day_cname = f"pw01srl1006{year}0101{year}0105/DA"
         race_cname = f"pw01sde1006{year}010101{year}0105/6B"
         checkdigits = {
