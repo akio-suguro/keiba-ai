@@ -204,7 +204,7 @@ def load_horses(race_id):
 def load_saved_prediction(race_id):
     with get_connection() as conn:
         columns = table_columns(conn, "predictions")
-        required = {"race_id", "predicted_at", "model_version", "top3_predictions"}
+        required = {"race_id", "top3_predictions"}
         missing = required - columns
         if missing:
             raise ValueError(
@@ -213,8 +213,7 @@ def load_saved_prediction(race_id):
         return read_sql_query(
             """
             SELECT
-                predicted_at, model_version, top3_predictions,
-                chaos_probability, decision, upset_factors
+                top3_predictions, chaos_probability, decision, upset_factors
             FROM predictions
             WHERE race_id = :race_id
             ORDER BY predicted_at DESC
@@ -635,8 +634,8 @@ st.markdown(
     <style>
     [data-testid="stMainBlockContainer"] {
       max-width: 1440px;
-      padding-top: 3.25rem;
-      padding-bottom: 0.75rem;
+      padding-top: 2.75rem;
+      padding-bottom: 0.4rem;
     }
     [data-testid="stHeading"] {
       overflow: visible;
@@ -651,18 +650,20 @@ st.markdown(
     h2 {
       font-size: 1.3rem !important;
       line-height: 1.25 !important;
-      margin-top: 0.7rem !important;
-      margin-bottom: 0.2rem !important;
+      margin-top: 0.45rem !important;
+      margin-bottom: 0.1rem !important;
     }
     h3 {
       font-size: 1.05rem !important;
       line-height: 1.3 !important;
+      margin-top: 0.35rem !important;
+      margin-bottom: 0.1rem !important;
     }
     [data-testid="stVerticalBlock"] {
-      gap: 0.45rem;
+      gap: 0.3rem;
     }
     [data-testid="stMetric"] {
-      padding: 0.3rem 0.45rem;
+      padding: 0.2rem 0.35rem;
     }
     [data-testid="stMetricLabel"] {
       font-size: 0.82rem;
@@ -681,7 +682,7 @@ st.markdown(
     }
     @media (max-width: 700px) {
       [data-testid="stMainBlockContainer"] {
-        padding: 3.25rem 0.55rem 0.6rem;
+        padding: 3.25rem 0.55rem 0.4rem;
       }
       [data-testid="stHorizontalBlock"] {
         flex-wrap: wrap;
@@ -705,24 +706,24 @@ st.markdown(
       }
       h2 {
         font-size: 1.1rem !important;
-        margin-top: 0.55rem !important;
+        margin-top: 0.35rem !important;
       }
       h3 {
         font-size: 0.98rem !important;
       }
       [data-testid="stVerticalBlock"] {
-        gap: 0.3rem;
+        gap: 0.2rem;
       }
       [data-testid="stMarkdownContainer"] p {
         font-size: 0.84rem;
-        line-height: 1.3;
+        line-height: 1.2;
       }
       [data-testid="stCaptionContainer"] {
         font-size: 0.7rem;
         line-height: 1.25;
       }
       [data-testid="stMetric"] {
-        padding: 0.25rem 0.35rem;
+        padding: 0.2rem 0.3rem;
       }
       [data-testid="stMetricValue"] {
         font-size: 0.98rem;
@@ -879,10 +880,6 @@ else:
                         f'<p class="jockey-name">騎手：{jockey}</p>',
                         unsafe_allow_html=True,
                     )
-            st.caption(
-                f"予測時刻: {saved['predicted_at']} / "
-                f"モデル: {saved['model_version']}"
-            )
     except (FileNotFoundError, ValueError, KeyError, TypeError) as exc:
         st.error(f"保存済み上位3頭予測の読み込みに失敗しました: {exc}")
     except (SQLAlchemyError, pd.errors.DatabaseError) as exc:
