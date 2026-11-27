@@ -615,10 +615,10 @@ def race_filter_controls(races, key_prefix):
     return filtered
 
 
-def display_value(value, suffix=""):
+def display_value(value, suffix="", missing="不明"):
     """欠損値を安全に表示する。"""
     if pd.isna(value) or str(value).strip() == "":
-        return "不明"
+        return missing
     return f"{value}{suffix}"
 
 
@@ -634,7 +634,7 @@ st.markdown(
     <style>
     [data-testid="stMainBlockContainer"] {
       max-width: 1440px;
-      padding-top: 2.75rem;
+      padding-top: 4rem;
       padding-bottom: 0.4rem;
     }
     [data-testid="stHeading"] {
@@ -682,7 +682,7 @@ st.markdown(
     }
     @media (max-width: 700px) {
       [data-testid="stMainBlockContainer"] {
-        padding: 3.25rem 0.55rem 0.4rem;
+        padding: 4.5rem 0.55rem 0.4rem;
       }
       [data-testid="stHorizontalBlock"] {
         flex-wrap: wrap;
@@ -809,15 +809,62 @@ except (SQLAlchemyError, pd.errors.DatabaseError) as exc:
     st.error(f"出走馬データの取得に失敗しました: {exc}")
     st.stop()
 
+saved_predictions = None
+saved_prediction_error = None
+ranked_predictions = []
+try:
+    saved_predictions = load_saved_prediction(selected_race_id)
+except (
+    FileNotFoundError,
+    ValueError,
+    KeyError,
+    TypeError,
+    SQLAlchemyError,
+    pd.errors.DatabaseError,
+) as exc:
+    saved_prediction_error = exc
+
+ranked_prediction_error = None
+if saved_predictions is not None and not saved_predictions.empty:
+    try:
+        ranked_predictions = sorted(
+            json.loads(saved_predictions.iloc[0]["top3_predictions"]),
+            key=lambda item: int(item["rank"]),
+        )
+    except (ValueError, KeyError, TypeError) as exc:
+        ranked_prediction_error = exc
+
 st.subheader("出走馬・出走情報")
 if horses.empty:
     st.info("このレースの出走馬データはありません。")
 else:
-    entry_display = horses.sort_values(
-        "horse_number",
-        key=lambda values: pd.to_numeric(values, errors="coerce"),
+    entry_display = horses.copy()
+    if ranked_predictions:
+        prediction_ranks = {
+            str(item["horse_name"]): int(item["rank"])
+            for item in ranked_predictions
+            if item.get("horse_name")
+        }
+        entry_display["__prediction_rank"] = entry_display[
+            "horse_name"
+        ].map(lambda name: prediction_ranks.get(str(name)))
+    else:
+        entry_display["__prediction_rank"] = np.nan
+    entry_display["__horse_number_sort"] = pd.to_numeric(
+        entry_display["horse_number"],
+        errors="coerce",
+    )
+    sort_columns = (
+        ["__prediction_rank", "__horse_number_sort", "horse_name"]
+        if ranked_predictions and entry_display["finish"].isna().all()
+        else ["__horse_number_sort", "horse_name"]
+    )
+    entry_display = entry_display.sort_values(
+        sort_columns,
         na_position="last",
-    ).rename(
+        kind="stable",
+    ).drop(columns=["__prediction_rank", "__horse_number_sort"])
+    entry_display = entry_display.rename(
         columns={
             "horse_number": "馬番",
             "horse_name": "馬名",
@@ -843,6 +890,18 @@ else:
         "人気",
         "単勝オッズ",
     ]
+    entry_display[entry_columns] = entry_display[entry_columns].fillna(
+        "未確定"
+    )
+    order_description = (
+        "AI順位順"
+        if ranked_predictions and entry_display["finish"].isna().all()
+        else "馬番順"
+    )
+    st.caption(
+        f"{order_description}に表示します。"
+        "DBに値がない馬番・馬体重・人気・オッズなどは「未確定」と表示します。"
+    )
     st.dataframe(
         entry_display[entry_columns],
         width="stretch",
@@ -850,30 +909,47 @@ else:
         hide_index=True,
     )
 
+    entry_names = set(horses["horse_name"].dropna().astype(str))
+    missing_top3_names = [
+        str(item["horse_name"])
+        for item in ranked_predictions[:3]
+        if item.get("horse_name")
+        and str(item["horse_name"]) not in entry_names
+    ]
+    if missing_top3_names:
+        st.warning(
+            "保存済み上位3頭予測に、現在の出走馬一覧にいない馬が含まれています。"
+            "出走表を更新してから週次予測を再実行してください。"
+        )
+
 if horses.empty:
     st.warning("このレースには出走馬データがありません。予測できません。")
 else:
     try:
-        saved_predictions = load_saved_prediction(selected_race_id)
-        if saved_predictions.empty:
+        if saved_prediction_error is not None:
+            raise saved_prediction_error
+        if saved_predictions is None or saved_predictions.empty:
             st.info(
                 "週次ジョブの予測結果がまだありません。"
                 "出走表の更新後に週次ジョブを実行してください。"
             )
+        elif ranked_prediction_error is not None:
+            raise ranked_prediction_error
+        elif not ranked_predictions:
+            st.info("保存済みの上位3頭予測データがありません。")
         else:
-            saved = saved_predictions.iloc[0]
-            ranked = sorted(
-                json.loads(saved["top3_predictions"]),
-                key=lambda item: item["rank"],
-            )
-            top3 = ranked[:3]
+            top3 = ranked_predictions[:3]
             top_columns = st.columns(len(top3))
             for rank, horse in enumerate(top3, start=1):
                 with top_columns[rank - 1]:
                     st.metric(
                         f"AI評価{rank}番手｜{horse['horse_name'] or '不明'}",
                         f"{horse['score']:.1f} 点",
-                        f"馬番 {horse['horse_number']}",
+                        "馬番 "
+                        + display_value(
+                            horse["horse_number"],
+                            missing="未確定",
+                        ),
                     )
                     jockey = escape(str(display_value(horse["jockey"])))
                     st.markdown(
@@ -892,8 +968,9 @@ if horses.empty:
     st.info("出走馬データがないため、波乱予測は表示できません。")
 else:
     try:
-        saved_predictions = load_saved_prediction(selected_race_id)
-        if saved_predictions.empty:
+        if saved_prediction_error is not None:
+            raise saved_prediction_error
+        if saved_predictions is None or saved_predictions.empty:
             st.info("保存済みの波乱予測はありません。")
         else:
             saved = saved_predictions.iloc[0]
@@ -924,6 +1001,8 @@ else:
                 )
     except (FileNotFoundError, ValueError, KeyError, TypeError) as exc:
         st.error(f"波乱予測に失敗しました: {exc}")
+    except (SQLAlchemyError, pd.errors.DatabaseError) as exc:
+        st.error(f"予測結果のDB読込に失敗しました: {exc}")
     except Exception as exc:
         st.error(f"波乱予測中にエラーが発生しました: {type(exc).__name__}: {exc}")
 
