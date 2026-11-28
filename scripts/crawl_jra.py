@@ -1463,6 +1463,42 @@ def parse_entry_horses(soup: BeautifulSoup) -> list[dict]:
             if weight_match
             else None
         )
+        body_weight_cell = horse_cell.select_one(
+            ".result_line .cell.weight"
+        )
+        body_weight_text = (
+            body_weight_cell.get_text(" ", strip=True)
+            if body_weight_cell
+            else ""
+        )
+        body_weight_match = re.search(
+            r"(\d+)\s*kg",
+            body_weight_text,
+            re.IGNORECASE,
+        )
+        body_weight = (
+            int(body_weight_match.group(1))
+            if body_weight_match
+            else None
+        )
+        transition = (
+            body_weight_cell.select_one(".transition")
+            if body_weight_cell
+            else None
+        )
+        change_match = (
+            re.search(
+                r"\(([+-]?\d+)\)",
+                transition.get_text(" ", strip=True),
+            )
+            if transition
+            else None
+        )
+        weight_change = (
+            int(change_match.group(1))
+            if change_match
+            else None
+        )
         odds_element = horse_cell.select_one(".odds .num")
         odds = (
             to_float(odds_element.get_text(" ", strip=True))
@@ -1551,8 +1587,8 @@ def parse_entry_horses(soup: BeautifulSoup) -> list[dict]:
                 "time": None,
                 "margin": None,
                 "last_3f": None,
-                "body_weight": None,
-                "weight_change": None,
+                "body_weight": body_weight,
+                "weight_change": weight_change,
                 "odds": odds,
                 "popularity": popularity,
                 "corner_order": None,

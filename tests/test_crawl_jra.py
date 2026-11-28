@@ -1095,10 +1095,17 @@ class TransitionalRacePageTests(unittest.TestCase):
 
 class HorseFieldExtractionTests(unittest.TestCase):
     def test_extracts_pre_race_horse_fields_from_jra_entry_table(self):
+        weight_changes = {
+            1: "(+4)",
+            2: "(-2)",
+            3: "(初出走)",
+            4: "(+0)",
+            5: "(+1)",
+        }
         rows = "".join(
             f"""
             <tr>
-              <td class="waku"><img alt="{number}枠"></td>
+              <td class="waku"><img alt="枠{number}白"></td>
               <td class="num">{number}</td>
               <td class="horse">
                 <div class="name_line">
@@ -1108,8 +1115,19 @@ class HorseFieldExtractionTests(unittest.TestCase):
                     </a>
                   </div>
                   <div class="odds">
-                    <span class="num">{number}.5</span>
-                    <span class="pop_rank">({number} 番人気)</span>
+                    <div class="odds_line">
+                      <span class="num"><strong>{number}.5</strong></span>
+                      <span class="pop_rank">(
+                        {number}<span>番人気</span>)
+                      </span>
+                    </div>
+                  </div>
+                </div>
+                <div class="result_line">
+                  <div class="cell result">(0.0.0.0)</div>
+                  <div class="cell weight">
+                    {470 + number}kg
+                    <span class="transition">{weight_changes[number]}</span>
                   </div>
                 </div>
                 <p class="trainer">
@@ -1151,6 +1169,30 @@ class HorseFieldExtractionTests(unittest.TestCase):
         self.assertEqual(horses[0]["trainer"], "Trainer 1")
         self.assertEqual(horses[0]["odds"], 1.5)
         self.assertEqual(horses[0]["popularity"], 1)
+        self.assertEqual(
+            [horse["horse_number"] for horse in horses],
+            [1, 2, 3, 4, 5],
+        )
+        self.assertEqual(
+            [horse["frame"] for horse in horses],
+            [1, 2, 3, 4, 5],
+        )
+        self.assertEqual(
+            [horse["odds"] for horse in horses],
+            [1.5, 2.5, 3.5, 4.5, 5.5],
+        )
+        self.assertEqual(
+            [horse["popularity"] for horse in horses],
+            [1, 2, 3, 4, 5],
+        )
+        self.assertEqual(
+            [horse["body_weight"] for horse in horses],
+            [471, 472, 473, 474, 475],
+        )
+        self.assertEqual(
+            [horse["weight_change"] for horse in horses],
+            [4, -2, None, 0, 1],
+        )
         self.assertEqual(
             horses[0]["trainer_url"],
             "https://www.jra.go.jp/JRADB/accessC.html?CNAME=trainer1/AA",
