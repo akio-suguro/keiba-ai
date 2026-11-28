@@ -1094,6 +1094,103 @@ class TransitionalRacePageTests(unittest.TestCase):
 
 
 class HorseFieldExtractionTests(unittest.TestCase):
+    def test_extracts_all_fields_from_confirmed_tokyo_entry_fixture(self):
+        fixture_path = (
+            Path(__file__).parent
+            / "fixtures"
+            / "jra_tokyo_20261128_6r.html"
+        )
+        soup = BeautifulSoup(
+            fixture_path.read_text(encoding="utf-8"),
+            "html.parser",
+        )
+
+        horses = crawl_jra.parse_entry_horses(soup)
+
+        self.assertEqual(len(horses), 8)
+        self.assertEqual(
+            [horse["horse_number"] for horse in horses],
+            list(range(1, 9)),
+        )
+        self.assertEqual(
+            [horse["frame"] for horse in horses],
+            list(range(1, 9)),
+        )
+        self.assertEqual(
+            [horse["odds"] for horse in horses],
+            [33.1, 2.5, 16.6, 101.3, 24.5, 2.4, 5.0, 9.3],
+        )
+        self.assertEqual(
+            [horse["popularity"] for horse in horses],
+            [7, 2, 5, 8, 6, 1, 3, 4],
+        )
+        self.assertEqual(
+            [horse["body_weight"] for horse in horses],
+            [474, 502, 488, 524, 486, 508, 426, 432],
+        )
+        self.assertTrue(
+            all(horse["weight_change"] is None for horse in horses)
+        )
+        for field in ("horse_name", "sex_age", "weight", "jockey", "trainer"):
+            self.assertTrue(all(horse[field] for horse in horses), field)
+
+    def test_crawl_one_entry_saves_fixture_fields_to_horses(self):
+        fixture_path = (
+            Path(__file__).parent
+            / "fixtures"
+            / "jra_tokyo_20261128_6r.html"
+        )
+        soup = BeautifulSoup(
+            fixture_path.read_text(encoding="utf-8"),
+            "html.parser",
+        )
+        race_info = {
+            "url": (
+                "https://www.jra.go.jp/JRADB/accessD.html?"
+                "CNAME=pw01dde0105202605070620261128/8F"
+            ),
+            "race_date": None,
+            "venue": None,
+            "race_name": "fixture race",
+        }
+
+        with sqlite3.connect(":memory:") as conn:
+            crawl_jra.init_db(conn)
+            with (
+                patch.object(
+                    crawl_jra,
+                    "fetch_jra_card_page",
+                    return_value=soup,
+                ),
+                patch.object(
+                    crawl_jra,
+                    "extract_race_info",
+                    return_value=race_info,
+                ),
+            ):
+                result = crawl_jra.crawl_one_entry(
+                    conn,
+                    "pw01dde0105202605070620261128/8F",
+                )
+
+            self.assertEqual(result, (8, True))
+            stored = conn.execute(
+                """
+                SELECT horse_number, frame, odds, popularity, body_weight
+                FROM horses
+                ORDER BY horse_number
+                """
+            ).fetchall()
+
+        self.assertEqual(len(stored), 8)
+        self.assertEqual(
+            stored[5],
+            (6, 6, 2.4, 1, 508),
+        )
+        self.assertTrue(
+            all(all(value is not None for value in row) for row in stored)
+        )
+
     def test_extracts_pre_race_horse_fields_from_jra_entry_table(self):
         weight_changes = {
             1: "(+4)",

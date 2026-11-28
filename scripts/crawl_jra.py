@@ -2063,11 +2063,92 @@ def crawl_one_entry(
             )
 
         save_race(conn, race, horses, [])
+        saved_counts = db_execute(
+            conn,
+            """
+            SELECT
+                COUNT(*) AS total,
+                COUNT(horse_number) AS horse_number,
+                COUNT(frame) AS frame,
+                COUNT(odds) AS odds,
+                COUNT(popularity) AS popularity,
+                COUNT(body_weight) AS body_weight
+            FROM horses
+            WHERE race_id = (
+                SELECT id
+                FROM races
+                WHERE url = ?
+                   OR (
+                       race_date = ?
+                       AND venue = ?
+                       AND race_number = ?
+                   )
+                ORDER BY CASE WHEN url = ? THEN 0 ELSE 1 END, id
+                LIMIT 1
+            )
+            """,
+            (
+                url,
+                race["race_date"],
+                race["venue"],
+                race["race_number"],
+                url,
+            ),
+        ).fetchone()
+        count_fields = (
+            "total",
+            "horse_number",
+            "frame",
+            "odds",
+            "popularity",
+            "body_weight",
+        )
+        saved_values = (
+            dict(zip(count_fields, saved_counts))
+            if isinstance(saved_counts, tuple)
+            else {
+                field: row_value(saved_counts, field)
+                for field in count_fields
+            }
+        )
+        expected_values = {
+            "total": len(horses),
+            **{
+                field: sum(
+                    horse.get(field) is not None for horse in horses
+                )
+                for field in (
+                    "horse_number",
+                    "frame",
+                    "odds",
+                    "popularity",
+                    "body_weight",
+                )
+            },
+        }
+        if saved_values != expected_values:
+            raise RuntimeError(
+                "出馬表のDB保存値が抽出値と一致しません: "
+                f"expected={expected_values}, saved={saved_values}"
+            )
+
+        saved_total = saved_values["total"]
+        saved_fields = " ".join(
+            f"{label} {saved_values[field]}/{saved_total}"
+            for field, label in (
+                ("horse_number", "馬番"),
+                ("frame", "枠番"),
+                ("odds", "オッズ"),
+                ("popularity", "人気"),
+                ("body_weight", "馬体重"),
+            )
+        )
         clear_retry_queue(conn, url)
         print(
             f"[ENTRY] {race['race_date']} {race['venue']} "
             f"{race['race_name']} "
-            f"| 出走馬 {len(horses)}件"
+            f"| 出走馬 {len(horses)}件 "
+            f"| DB {saved_fields}"
         )
         return len(horses), True
     except JraParameterError as exc:
