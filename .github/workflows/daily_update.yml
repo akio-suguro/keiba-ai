@@ -2,7 +2,11 @@ name: Weekly Keiba Update
 
 on:
   schedule:
+    # 金曜 21:17 JST（本実行）
+    - cron: "17 12 * * 5"
+    # 土曜 08:17 JST（予備1）
     - cron: "17 23 * * 5"
+    # 土曜 10:17 JST（予備2）
     - cron: "17 1 * * 6"
   workflow_dispatch:
 
